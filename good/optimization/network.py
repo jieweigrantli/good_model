@@ -8,6 +8,7 @@ import networkx as nx
 import pyomo.environ as pyomo
 import pyomo.opt as opt
 import pyomo.util.model_size as model_size
+from pyomo.common.errors import ApplicationError
 
 from copy import deepcopy
 
@@ -220,6 +221,17 @@ class Network:
         #Generating the solver object
         solver = opt.SolverFactory(**solver_kw)
         # solver = opt.SolverFactory('cplex_direct')
+
+        # Check if solver is available
+        if not solver.available():
+            solver_name = solver_kw.get('_name', 'unknown')
+            raise ApplicationError(
+                f"No executable found for solver '{solver_name}'. "
+                f"Please install the solver executable. "
+                f"For CBC: download from https://www.coin-or.org/download/binary/Cbc/ "
+                f"or install via conda: conda install -c conda-forge coincbc. "
+                f"For GLPK: install via your system package manager or conda."
+            )
 
         self.model.dual = pyomo.Suffix(direction = pyomo.Suffix.IMPORT)
 
