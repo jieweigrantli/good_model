@@ -6,7 +6,7 @@ import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
 
-def plot_lmps(ax, graph, solution):
+def plot_lmps(ax, solution, graph=None):
 
     for source, node in solution._node.items():
 
@@ -36,7 +36,7 @@ def plot_lmps(ax, graph, solution):
 
     return ax
 
-def plot_base_loads(ax, graph, solution):
+def plot_base_loads(ax, solution, graph=None):
 
     for source, node in solution._node.items():
 
@@ -70,7 +70,7 @@ def plot_base_loads(ax, graph, solution):
 
     return ax
 
-def plot_total_generation(ax, graph, solution):
+def plot_total_generation(ax, solution, graph=None):
 
     for source, node in solution._node.items():
 
@@ -106,7 +106,7 @@ def plot_total_generation(ax, graph, solution):
 
     return ax
 
-def plot_net_generation(ax, graph, solution):
+def plot_net_generation(ax, solution, graph=None):
 
     for source, node in solution._node.items():
 
@@ -142,7 +142,7 @@ def plot_net_generation(ax, graph, solution):
 
     return ax
 
-def plot_generation_by_type(ax, graph, solution):
+def plot_generation_by_type(ax, solution, graph=None):
 
     gen_amounts = {'wastage': [], 'shortfall': []}
 
@@ -155,7 +155,13 @@ def plot_generation_by_type(ax, graph, solution):
 
         for handle, asset in node['assets'].items():
 
-            asset_type = graph._node[source]['assets'][handle]['type']
+            # Try to get type from solution first, fall back to graph if needed
+            if 'type' in asset:
+                asset_type = asset['type']
+            elif graph is not None and source in graph._node and handle in graph._node[source].get('assets', {}):
+                asset_type = graph._node[source]['assets'][handle].get('type', 'unknown')
+            else:
+                asset_type = 'unknown'
 
             if asset_type not in gen_amounts:
 
@@ -205,7 +211,7 @@ def plot_generation_by_type(ax, graph, solution):
 
     return ax
 
-def plot_generation_by_fuel(ax, graph, solution):
+def plot_generation_by_fuel(ax, solution, graph=None):
 
     gen_amounts = {'wastage': [], 'shortfall': []}
 
@@ -218,7 +224,13 @@ def plot_generation_by_fuel(ax, graph, solution):
 
         for handle, asset in node['assets'].items():
 
-            asset_fuel = graph._node[source]['assets'][handle].get('fuel', None)
+            # Try to get fuel from solution first, fall back to graph if needed
+            if 'fuel' in asset:
+                asset_fuel = asset.get('fuel', None)
+            elif graph is not None and source in graph._node and handle in graph._node[source].get('assets', {}):
+                asset_fuel = graph._node[source]['assets'][handle].get('fuel', None)
+            else:
+                asset_fuel = None
 
             if asset_fuel is None:
 
@@ -269,7 +281,7 @@ def plot_generation_by_fuel(ax, graph, solution):
 
     return ax
 
-def plot_capex_by_type(ax, graph, solution):
+def plot_capex_by_type(ax, solution, graph=None):
 
     capex_amounts = {}
 
@@ -277,7 +289,13 @@ def plot_capex_by_type(ax, graph, solution):
 
         for handle, asset in node['assets'].items():
 
-            asset_type = graph._node[source]['assets'][handle]['type']
+            # Try to get type from solution first, fall back to graph if needed
+            if 'type' in asset:
+                asset_type = asset['type']
+            elif graph is not None and source in graph._node and handle in graph._node[source].get('assets', {}):
+                asset_type = graph._node[source]['assets'][handle].get('type', 'unknown')
+            else:
+                asset_type = 'unknown'
 
             if asset_type not in capex_amounts:
 

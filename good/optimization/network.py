@@ -41,6 +41,21 @@ class Network:
     def size(self):
 
         return model_size.build_model_size_report(self.model)
+    
+    @property
+    def solution(self):
+        """
+        Property that automatically builds the solution graph when accessed.
+        The solution is cached after first access.
+        """
+        if not hasattr(self, '_solution'):
+            self.build_solution_full()
+        return self._solution
+    
+    @solution.setter
+    def solution(self, value):
+        """Setter for solution property"""
+        self._solution = value
 
     def build_solution_full(self):
 
@@ -87,9 +102,9 @@ class Network:
 
                 edges.append((source, target, solution_edge))
 
-        self.solution = self.graph.__class__()
-        self.solution.add_nodes_from(nodes)
-        self.solution.add_edges_from(edges)
+        self._solution = self.graph.__class__()
+        self._solution.add_nodes_from(nodes)
+        self._solution.add_edges_from(edges)
     
     def solution_graph(self):
 
@@ -218,19 +233,49 @@ class Network:
         tee = kwargs.get('tee', False)
         solver_kw = kwargs.get('solver', {'_name': 'glpk'})
 
-        #Generating the solver object
-        solver = opt.SolverFactory(**solver_kw)
+        # Handle both string and dict formats for solver specification
+        if isinstance(solver_kw, str):
+            solver = opt.SolverFactory(solver_kw)
+            solver_name = solver_kw
+        else:
+            #Generating the solver object
+            solver = opt.SolverFactory(**solver_kw)
+            solver_name = solver_kw.get('_name') or solver_kw.get('name', 'unknown')
         # solver = opt.SolverFactory('cplex_direct')
 
         # Check if solver is available
         if not solver.available():
-            solver_name = solver_kw.get('_name', 'unknown')
+            
+            # Provide solver-specific installation instructions
+            solver_instructions = {
+                'cbc': "Install via conda: conda install -c conda-forge coincbc, or download from https://www.coin-or.org/download/binary/Cbc/",
+                'glpk': "Install via conda: conda install -c conda-forge glpk, or download from https://www.gnu.org/software/glpk/",
+                'gurobi': "Install Gurobi Optimizer and obtain a license (free academic license available). Install via: pip install gurobipy, then download from https://www.gurobi.com/downloads/",
+                'cplex': "Install IBM CPLEX Optimizer and obtain a license. Download from https://www.ibm.com/products/ilog-cplex-optimization-studio",
+            }
+            
+            instruction = solver_instructions.get(solver_name.lower(), 
+                "Please install the solver executable and ensure it's in your system PATH.")
+            
+            # Check for alternative solvers that might be available
+            alternative_solvers = ['glpk', 'cbc', 'cplex', 'gurobi']
+            available_alternatives = []
+            for alt_solver in alternative_solvers:
+                if alt_solver != solver_name.lower():
+                    try:
+                        test_solver = opt.SolverFactory(alt_solver)
+                        if test_solver.available():
+                            available_alternatives.append(alt_solver)
+                    except Exception:
+                        pass
+            
+            alt_msg = ""
+            if available_alternatives:
+                alt_msg = f" Alternatively, you can use one of these available solvers: {', '.join(available_alternatives)}"
+            
             raise ApplicationError(
                 f"No executable found for solver '{solver_name}'. "
-                f"Please install the solver executable. "
-                f"For CBC: download from https://www.coin-or.org/download/binary/Cbc/ "
-                f"or install via conda: conda install -c conda-forge coincbc. "
-                f"For GLPK: install via your system package manager or conda."
+                f"{instruction}.{alt_msg}"
             )
 
         self.model.dual = pyomo.Suffix(direction = pyomo.Suffix.IMPORT)
@@ -239,6 +284,10 @@ class Network:
         t0 = time.time()
         self.result = solver.solve(self.model, tee = tee)
         cprint(f'Problem Solved: {time.time() - t0}', self.verbose)
+        
+        # Clear solution cache so it gets rebuilt if accessed
+        if hasattr(self, '_solution'):
+            delattr(self, '_solution')
 
     def build(self):
 
