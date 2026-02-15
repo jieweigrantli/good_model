@@ -117,6 +117,18 @@ class Producer(Asset):
                 )
             )
 
+        # Minimum production (must-run) when non-dispatchable: production >= available capacity * profile
+        if not self.dispatchable:
+            setattr(
+                model, f"{self.handle}::production_min_constraint",
+                pyomo.Constraint(
+                    model.steps,
+                    rule=lambda m, t: production[t] >= (
+                        self.installed_capacity * profile[t] + capex * profile[t]
+                    ),
+                ),
+            )
+
         # Ramp rate
         def ramp_rate_rule_upper(m, t):
 

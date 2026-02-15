@@ -17,6 +17,14 @@ class Store(Asset):
         self.consumption_rate = kwargs.get('consumption_rate', 1)
         self.initial = kwargs.get('initial', 0)
 
+        # Storage duration in seconds. Converts installed_capacity (W, power)
+        # to energy capacity (W-s) for the level constraint:
+        #   max_level = installed_capacity * storage_duration
+        # Default: 4 hours (14400 s) — typical for battery energy storage.
+        # Without this, installed_capacity (W) would be used directly as W-s,
+        # making storage capacity ~3600x too small (1 second at rated power).
+        self.storage_duration = kwargs.get('storage_duration', 4 * 3600)
+
         # Can capacity be expanded
         self.capex_capacity = kwargs.get('capex_capacity', 0)
         self.capex_cost = kwargs.get('capex_cost', 0)
@@ -174,13 +182,16 @@ class Store(Asset):
                 )
             )
 
-        # Max and min level
+        # Max and min level (energy capacity = power capacity * storage duration)
         setattr(
             model, f"{self.handle}::storage_constraint",
             pyomo.Constraint(
                 model.steps,
                 rule = (
-                    lambda m, t: self.installed_capacity + capex - level[t] >= 0
+                    lambda m, t: (
+                        (self.installed_capacity + capex) * self.storage_duration
+                        - level[t] >= 0
+                        )
                     )
                 )
             )

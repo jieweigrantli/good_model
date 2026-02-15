@@ -1,0 +1,24 @@
+1. Nuclear still “dispatchable” even though it’s cheaper than gas
+Cause: In the GOOD model, dispatchable was only stored on the Producer; it was never used in the math. So setting dispatchable=False in the graph did not add any constraint. The solver could still curtail nuclear because there was no lower bound on production.
+Change: In good/optimization/assets/producer.py, when dispatchable=False the Producer now adds a minimum production constraint:
+production[t] >= installed_capacity * profile[t] + capex * profile[t] for each time step.
+So for non-dispatchable producers (e.g. nuclear with dispatchable=False), production is forced to the full available capacity every hour; the solver can no longer curtail them. You can keep nuclear cheaper than gas (no need to set cost to 0); the must-run behavior comes from this constraint, not from cost.
+2. Wind dips in the post-optimization stacked generation plot
+Cause: There are two definitions of slice_graph_profiles in the notebook:
+One (cell 8) does filter wind (day-of-month artifacts) and is used for the early wind/solar-by-region plot.
+A second (cell 10) does not filter wind and was overwriting the first when run later.
+Optimization and the stacked generation plot use the graph produced by slice_graph_profiles. So when cell 10 ran last, the graph (and thus optimization and plots) still had the bad wind profile with 0.001, 0.002, … every 25th hour → artificial dips in wind generation after optimization.
+Change: The second slice_graph_profiles (cell 10) was updated to:
+Use the same wind artifact filtering as the first (filter profiles whose name looks like wind, and inline asset wind profiles by fuel).
+Include a fallback definition of filter_wind_profile_artifacts in that cell so it works even if the wind/solar plot cell wasn’t run.
+So it’s a profile-reading issue: the graph passed to the optimizer now always gets wind profiles with day-of-month artifacts removed, regardless of run order. The post-optimization stacked generation plot will use that same cleaned wind profile, so the recurring wind dips should disappear.
+What you need to do
+Re-run the notebook (or at least from the slice_graph_profiles / optimization cells onward) so baseline and EV graphs are built with the updated slice_graph_profiles and wind filtering.
+Re-run the optimization so the solution uses the corrected wind profiles and the new nuclear minimum-production constraint (with dispatchable=False already set for nuclear in your graph).
+After that, you should see:
+No artificial wind dips in the stacked generation plot.
+Nuclear no longer curtailed in regions that have shortfall (must-run enforced by the new constraint).
+
+
+
+Plant Name	UniqueID_Final	ORIS Plant Code	Boiler/Generator/Committed Unit	Unit ID	CAMD Database UnitID	PlantType	Combustion Turbine/IC Engine	Region Name	State Name	State Code	County	County Code	FIPS5	Capacity (MW)	Heat Rate (Btu/kWh)	On Line Year	Retirement Year	Firing	Bottom	Cogen?	Modeled Fuels	Wet/DryScrubber	Scrubber_Online_Year	Scrubber Efficiency	NOx Comb Control	NOx Post-Comb Control	SCR_Online_Year	SNCR_Online_Year	PM Control	FlueGasConditioning_Flag	Mercury_Controls	ACI_Online_Year	Mercury_Controls Efficiency	SO2 Permit Rate (lbs/mmBtu)	Mode 1 NOx Rate (lbs/mmBtu)	Mode 2 NOx Rate (lbs/mmBtu)	Mode 3 NOx Rate  (lbs/mmBtu)	Mode 4 NOx Rate  (lbs/mmBtu)	Hg EMF for BIT	Hg EMF for SUB	Hg EMF for LIG	HCL Removal	DSI Unit	DSI Online Year	CCS	CCS Removal	C2G	C2G Online Year	BART Affected Unit	Owner Name	Owner Percent	Holding Company	Holding Company Percent
