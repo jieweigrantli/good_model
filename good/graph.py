@@ -88,12 +88,15 @@ def graph_from_json(filename, **kwargs):
 
 		nlg = json.load(file)
 
-	# NetworkX expects "links" by default, so convert "edges" to "links" if needed
-	# Make a copy to avoid modifying the original dict
+	# Ensure both "links" and "edges" keys exist so the function works
+	# with any version of NetworkX (older versions expect "links",
+	# newer versions 3.2+ expect "edges" by default).
 	if isinstance(nlg, dict):
 		nlg = nlg.copy()
 		if 'edges' in nlg and 'links' not in nlg:
-			nlg['links'] = nlg.pop('edges')
+			nlg['links'] = nlg['edges']
+		elif 'links' in nlg and 'edges' not in nlg:
+			nlg['edges'] = nlg['links']
 
 	return nx.node_link_graph(nlg, **kwargs)
 
@@ -104,12 +107,13 @@ def graph_from_nlg(nlg, **kwargs):
 	Converts NLG (node-link graph) format to NetworkX graph
 	'''
 
-	# NetworkX expects "links" by default, so convert "edges" to "links" if needed
-	# Make a copy to avoid modifying the original dict
+	# Ensure both "links" and "edges" keys exist for NetworkX compatibility.
 	if isinstance(nlg, dict):
 		nlg = nlg.copy()
 		if 'edges' in nlg and 'links' not in nlg:
-			nlg['links'] = nlg.pop('edges')
+			nlg['links'] = nlg['edges']
+		elif 'links' in nlg and 'edges' not in nlg:
+			nlg['edges'] = nlg['links']
 
 	return nx.node_link_graph(nlg, multigraph = False, **kwargs)
 
