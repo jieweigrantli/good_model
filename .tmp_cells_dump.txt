@@ -1,0 +1,517 @@
+﻿===== CELL 0 =====
+import warnings
+warnings.filterwarnings("ignore")
+
+import os
+import sys
+import time
+import json
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import pyomo.environ as pe
+from copy import deepcopy
+
+import good
+from good.reload import deep_reload
+
+
+===== CELL 5 =====
+# Configuration
+GRAPH_FILE = WEC_MODIFIED_FILE  # Use modified WEC (nuclear prices adjusted)
+POLICIES_FILE = 'Examples/policies.json'  # Path to policies JSON file (optional)
+
+# Regions representing California within the WEC network
+CALIFORNIA_REGIONS = ['WEC_BANC', 'WEC_CALN', 'WEC_LADW', 'WEC_SDGE', 'WECC_IID', 'WECC_SCE']
+
+# Transmission line efficiency (fraction 0-1). Applied to all transmission lines before optimization.
+# In WEC.json, "operating_cost" (e.g. 2.222e-9) is cost per W-s, NOT efficiency. Efficiency is separate (default 1.0).
+TRANSMISSION_EFFICIENCY = 0.97  # 1.0 = 100% (no losses). Set < 1 for losses (e.g. 0.97 for 3% loss).
+
+# Time period: full year (365 days * 24 hours = 8760)
+# START_HOUR selects the source window; model steps stay 0..NUM_HOURS-1 after slicing
+START_HOUR = 0  # Starting hour (0-indexed)
+NUM_HOURS = 365 * 24  # 8760 hours for full year
+STEPS = (0, NUM_HOURS)  # Network model steps are local to sliced profiles
+
+
+# EV Charging Load
+# Option A (file): point to a CSV (recommended for reproducibility)
+# Option B (synthetic): set EV_CHARGING_LOAD_FILE = None to generate random profile
+EV_CHARGING_LOAD_FILE = 'synthetic_load_8760.csv'  # e.g., '@@synthetic_load_8760.csv' in workspace root
+EV_CHARGING_LOAD_UNIT = 'kW'  # File unit: 'kW' or 'W'
+
+max_total_energy = NUM_HOURS * 1e9 * 3600  # Optional total-energy guard (W-s)
+
+if EV_CHARGING_LOAD_FILE is None:
+    # Synthetic random profile (fallback)
+    np.random.seed(42)
+    hourly_pattern = np.sin(np.arange(NUM_HOURS) * 2 * np.pi / 24) * 0.3 + 1.0
+    daily_variation = np.random.normal(1.0, 0.1, NUM_HOURS)
+    ev_charging_load = np.maximum(hourly_pattern * daily_variation, 0.0)
+else:
+    ev_data = pd.read_csv(EV_CHARGING_LOAD_FILE)
+    if 'load' in ev_data.columns:
+        ev_charging_load = ev_data['load'].to_numpy(dtype=float)
+    else:
+        numeric_cols = ev_data.select_dtypes(include=[np.number]).columns.tolist()
+        if not numeric_cols:
+            raise RuntimeError(f"No numeric load column found in {EV_CHARGING_LOAD_FILE}. Add a 'load' column.")
+        ev_charging_load = ev_data[numeric_cols[0]].to_numpy(dtype=float)
+
+    if len(ev_charging_load) != NUM_HOURS:
+        raise RuntimeError(
+            f"EV load length mismatch: expected NUM_HOURS={NUM_HOURS}, got {len(ev_charging_load)} from {EV_CHARGING_LOAD_FILE}"
+        )
+    if EV_CHARGING_LOAD_UNIT.lower() == 'kw':
+        ev_charging_load = ev_charging_load * 1000.0  # kW -> W
+    elif EV_CHARGING_LOAD_UNIT.lower() != 'w':
+        raise RuntimeError(f"Unsupported EV_CHARGING_LOAD_UNIT={EV_CHARGING_LOAD_UNIT}. Use 'kW' or 'W'.")
+
+
+# Apply constraints (total-energy guard only)
+total_energy = ev_charging_load.sum() * 3600  # W-s
+if total_energy > max_total_energy:
+    scale_factor = max_total_energy / total_energy
+    ev_charging_load = ev_charging_load * scale_factor
+    print(f"  Note: Scaled down to meet total energy constraint for {NUM_HOURS/24:.0f}-day window")
+    print(f"        Peak reduced to {ev_charging_load.max()/1e9:.3f} GW")
+print(f"EV Charging Load Summary:")
+print(f"  Time period: {NUM_HOURS} hours ({NUM_HOURS/24:.0f} days)")
+print(f"  Total energy: {ev_charging_load.sum() / 1e9:.2f} GWh")
+print(f"  Average hourly load: {ev_charging_load.mean() / 1e9:.2f} GW (converted to W for model)")
+print(f"  Peak hourly load: {ev_charging_load.max() / 1e9:.2f} GW")
+
+
+===== CELL 7 =====
+# Load the graph
+deep_reload(good)
+graph = good.graph.graph_from_json(GRAPH_FILE)
+
+
+# Force nuclear to run constant (no curtailment): set profile=None, capacity_factor=1 for all nuclear Producers
+nuclear_count = 0
+for node_name, node_data in graph._node.items():
+    if 'assets' not in node_data:
+        continue
+    for asset_name, asset_data in node_data['assets'].items():
+        if asset_data.get('_class') == 'Producer' and str(asset_data.get('fuel', '')).lower() == 'nuclear':
+            asset_data['profile'] = None
+            asset_data['capacity_factor'] = 1
+            asset_data['dispatchable'] = False    # <-- force it to be non-dispatchable
+            nuclear_count += 1
+print(f"  Set {nuclear_count} nuclear producers to constant baseload (no profile curtailment)")
+
+# Set storage duration for Store assets (battery and pump hydro)
+# The Store model needs installed_capacity (W) * storage_duration (s) = energy capacity (W-s).
+# Without this, storage is effectively limited to 1 W-s per W of capacity (~1 second).
+BATTERY_DURATION_HOURS = 4     # 4 hours for battery storage
+PUMP_HYDRO_DURATION_HOURS = 8  # 8 hours for pump hydro
+store_count = 0
+for node_name, node_data in graph._node.items():
+    if 'assets' not in node_data:
+        continue
+    for asset_name, asset_data in node_data['assets'].items():
+        if asset_data.get('_class') == 'Store':
+            fuel = str(asset_data.get('fuel', '')).lower()
+            if 'pump' in fuel or 'hydro' in fuel:
+                asset_data['storage_duration'] = PUMP_HYDRO_DURATION_HOURS * 3600
+            else:
+                asset_data['storage_duration'] = BATTERY_DURATION_HOURS * 3600
+            store_count += 1
+print(f"  Set storage_duration for {store_count} Store assets (battery={BATTERY_DURATION_HOURS}h, pump hydro={PUMP_HYDRO_DURATION_HOURS}h)")
+
+# Set transmission efficiency from config (applies to all transmission lines)
+for source in graph._adj:
+    for target, edge_data in graph._adj[source].items():
+        if 'lines' not in edge_data:
+            continue
+        for line_name, line_data in edge_data['lines'].items():
+            line_data['efficiency'] = TRANSMISSION_EFFICIENCY
+print(f"  Set transmission efficiency to {TRANSMISSION_EFFICIENCY} (fraction) for all lines")
+
+
+# CAPEX expansion controls
+# - ENABLE_CAPEX_EXPANSION: controls optional wind/solar/battery assets.
+# - ENABLE_TRANSMISSION_CAPEX_EXPANSION: controls line expansion via capex_limit.
+ENABLE_CAPEX_EXPANSION = True
+ENABLE_TRANSMISSION_CAPEX_EXPANSION = False
+TRANSMISSION_CAPEX_LIMIT_MULTIPLIER = 1.0  # if enabled and no limit exists, allow up to installed capacity * multiplier
+
+optional_load_modified = 0
+optional_store_modified = 0
+for node_name, node_data in graph._node.items():
+    for asset_name, asset_data in node_data.get('assets', {}).items():
+        if not asset_name.startswith('optional_'):
+            continue
+
+        if ENABLE_CAPEX_EXPANSION:
+            # Keep whatever capex_capacity is in the JSON (do not force-disable expansion).
+            pass
+        else:
+            # Hard-disable optional asset expansion for short-run marginal simulations.
+            if asset_data.get('capex_capacity', 0) != 0:
+                asset_data['capex_capacity'] = 0
+                if asset_data.get('_class') == 'Load':
+                    optional_load_modified += 1
+                elif asset_data.get('_class') == 'Store':
+                    optional_store_modified += 1
+
+if ENABLE_CAPEX_EXPANSION:
+    print("  Optional asset CAPEX expansion: ENABLED")
+else:
+    print(f"  Disabled CAPEX for {optional_load_modified} optional Load"
+          f" and {optional_store_modified} optional Store (battery) assets")
+
+# Normalize transmission capex schema for optimizer compatibility.
+# The optimizer reads capex_limit in good/optimization/lines/transmission.py.
+line_count = 0
+line_enabled = 0
+for source in graph._adj:
+    for target, edge_data in graph._adj[source].items():
+        if 'lines' not in edge_data:
+            continue
+        for line_name, line_data in edge_data['lines'].items():
+            line_count += 1
+
+            legacy_limit = line_data.get('capex_limit', line_data.get('capex_capacity', 0))
+
+            if ENABLE_TRANSMISSION_CAPEX_EXPANSION:
+                if legacy_limit == 0:
+                    legacy_limit = line_data.get('installed_capacity', 0) * TRANSMISSION_CAPEX_LIMIT_MULTIPLIER
+                line_data['capex_limit'] = legacy_limit
+                line_data['extensible'] = legacy_limit > 0
+                if line_data['extensible']:
+                    line_enabled += 1
+            else:
+                line_data['capex_limit'] = 0
+                line_data['extensible'] = False
+
+print(f"  Transmission CAPEX expansion enabled on {line_enabled}/{line_count} lines")
+
+# Load policies if provided
+if os.path.exists(POLICIES_FILE):
+    policies = good.utilities.read_json(POLICIES_FILE)
+else:
+    policies = {}
+    print("No policies file found, running without policies")
+
+===== CELL 8 =====
+# Network Configuration
+# CRITICAL: Define steps to limit optimization to 7 days (168 hours)
+# This ensures the Network only optimizes for the specified time period
+
+kw = {
+    'verbose': True,
+    'steps': STEPS,  # Always (0, NUM_HOURS); START_HOUR is applied by profile slicing
+    'amortization_period': 31536000 * 20,  # 20 year in seconds (for cost calculations)
+    'time_step': 3600,  # 1 hour in seconds
+    'shortfall_capacity': np.inf,  # Allow unlimited shortfall
+    # NOTE: shortfall_cost and wastage_cost are in $/W-s.
+    'shortfall_cost': 1e-3,  # ~167,000x most expensive gen ($3.6M/GWh penalty)
+    'wastage_capacity': np.inf,  # Allow unlimited wastage
+    'wastage_cost': 1e-6,  # ~167x most expensive gen ($3,600/GWh penalty)
+}
+
+# Solver Configuration with better options for harder problems
+solver_kw = {
+    'solver': {
+        '_name': 'gurobi_direct',
+        #'executable': r'C:\Program Files\Gurobi\win64\bin\grb_ts.exe', # (Optional path if not in system PATH)
+        # Solver options: no explicit time limit; allow up to 5 solutions
+        'options': {
+            'Method': 1,          # Dual simplex (more robust than barrier here)
+            'Presolve': 2,
+            'NumericFocus': 3,
+            'ScaleFlag': 2,
+            'Aggregate': 0,
+            'NodefileStart': 0.5, # Start writing node data to disk at ~0.5 GB
+            'NodefileDir': os.path.abspath('./gurobi_nodefiles'),
+            # optional:
+            # 'BarHomogeneous': 1,  # only relevant if Method=2 (barrier)
+        }
+    },
+    'tee': True,  # Print solver output to see progress
+}
+
+print("=" * 60)
+print("NETWORK CONFIGURATION")
+print("=" * 60)
+print(f"Time steps: {kw['steps']} (hours {kw['steps'][0]} to {kw['steps'][1]})")
+print(f"Number of hours: {kw['steps'][1] - kw['steps'][0]} hours ({NUM_HOURS/24:.1f} days)")
+print(f"Amortization period: {kw['amortization_period'] / 31536000:.1f} years")
+print(f"Solver: {solver_kw['solver']['_name']}")
+print("Solver timeout: None (no explicit time limit)")
+print("=" * 60)
+
+===== CELL 9 =====
+def slice_graph_profiles(graph, start_hour=0, num_hours=168):
+    """
+    Slice all profiles in the graph to match the specified time period.
+
+    Uses wrap-around indexing so non-zero START_HOUR works even when some
+    profiles are shorter than a full year.
+    """
+    graph = deepcopy(graph)
+
+    def _slice_or_wrap(profile_data, start_hour, num_hours):
+        arr = np.asarray(profile_data, dtype=float).flatten()
+        if arr.size == 0:
+            return np.zeros(num_hours, dtype=float)
+
+        # If requested window fits, take a direct contiguous slice.
+        if start_hour >= 0 and (start_hour + num_hours) <= arr.size:
+            return arr[start_hour:start_hour + num_hours]
+
+        # Otherwise wrap around cyclically to guarantee exact length.
+        idx = (np.arange(num_hours) + int(start_hour)) % arr.size
+        return arr[idx]
+
+    for _, node_data in graph._node.items():
+        profiles_dict = node_data.get('profiles', {})
+
+        # Slice node-level profile dictionary entries.
+        for profile_name, profile_data in list(profiles_dict.items()):
+            if isinstance(profile_data, (list, np.ndarray)):
+                profiles_dict[profile_name] = _slice_or_wrap(profile_data, start_hour, num_hours).tolist()
+
+        # Slice embedded per-asset profile lists (skip string profile keys).
+        for _, asset_data in node_data.get('assets', {}).items():
+            profile = asset_data.get('profile', None)
+            if profile is None or isinstance(profile, str):
+                continue
+            if isinstance(profile, (list, np.ndarray)):
+                asset_data['profile'] = _slice_or_wrap(profile, start_hour, num_hours).tolist()
+
+    return graph
+
+
+===== CELL 12 =====
+# Override EV charging load function to target California regions only
+
+def add_ev_charging_load(graph, ev_charging_load, target_regions=None, start_hour=0, num_hours=168):
+    """Add EV charging load to the graph.
+
+    By default, EV load is distributed **only across California regions**
+    (``CALIFORNIA_REGIONS``), while the optimization still runs on the
+    full WEC network (all nodes in ``graph``).
+
+    Parameters
+    ----------
+    graph : networkx.DiGraph
+        Full WEC network graph.
+    ev_charging_load : np.ndarray
+        1D array of hourly EV charging load in Watts.
+    target_regions : list of str, optional
+        Node IDs to which EV load should be added. If ``None``, defaults
+        to ``CALIFORNIA_REGIONS``.
+    start_hour : int
+        Starting hour index for slicing profiles.
+    num_hours : int
+        Number of hours to use from profiles.
+    """
+    # 1. SLICE THE ENTIRE GRAPH FIRST
+    # This creates a deepcopy and ensures the background (Solar/Wind)
+    # matches the user's requested time period [start_hour : start_hour + num_hours]
+    graph = slice_graph_profiles(graph, start_hour, num_hours)
+
+    # Default to California regions if no explicit target regions provided
+    # Use globals().get() to safely access CALIFORNIA_REGIONS
+    if target_regions is None:
+        california_regions = globals().get('CALIFORNIA_REGIONS', 
+            ['WEC_BANC', 'WEC_CALN', 'WEC_LADW', 'WEC_SDGE', 'WECC_IID', 'WECC_SCE'])
+        target_regions = california_regions
+    target_regions = set(target_regions)
+
+    # EV load is in absolute Watts - we need to add it properly
+    max_ev_load = ev_charging_load.max()
+    total_ev_energy = ev_charging_load.sum() / 1e9  # GWh
+
+    print("\nAdding EV charging load:")
+    print(f"  Peak load: {max_ev_load / 1e9:.2f} GW")
+    print(f"  Total energy: {total_ev_energy:.2f} GWh")
+    print(f"  Target regions for EV load: {sorted(target_regions)}")
+
+    # Distribute EV load proportionally to existing base loads **within target regions only**
+    total_base_load = 0
+    base_loads = {}
+
+    # Search for base load assets in target regions
+    for node_name, node_data in graph._node.items():
+        if target_regions and node_name not in target_regions:
+            continue
+
+        if 'assets' in node_data:
+            for asset_name, asset_data in node_data['assets'].items():
+                asset_class = asset_data.get('_class', 'unknown')
+                # Look for Load assets, ideally named 'base_load'
+                is_load = asset_class == 'Load'
+                has_base_load = 'base_load' in asset_name.lower()
+
+                if is_load and has_base_load:
+                    base_capacity = asset_data.get('installed_capacity', 0)
+                    # Sum absolute values
+                    if node_name not in base_loads:
+                        base_loads[node_name] = 0
+                    base_loads[node_name] += abs(base_capacity)
+                    total_base_load += abs(base_capacity)
+
+    # Fallback if no specific 'base_load' assets found in target regions
+    if total_base_load == 0:
+        print("  WARNING: No 'base_load' assets found in target regions. Distributing to all 'Load' assets in target regions.")
+        for node_name, node_data in graph._node.items():
+            if target_regions and node_name not in target_regions:
+                continue
+
+            if 'assets' in node_data:
+                for asset_name, asset_data in node_data['assets'].items():
+                    if asset_data.get('_class') == 'Load':
+                        cap = asset_data.get('installed_capacity', 0)
+                        base_loads[node_name] = base_loads.get(node_name, 0) + abs(cap)
+                        total_base_load += abs(cap)
+
+    print(f"  Total base load capacity found in target regions: {total_base_load / 1e9:.2f} GW")
+
+    if total_base_load == 0:
+        raise ValueError("No load assets found in target regions to attach EV load to!")
+
+    # Add EV load proportionally **only in target regions**
+    for node_name, node_data in graph._node.items():
+        if node_name not in base_loads or total_base_load <= 0:
+            continue
+
+        proportion = base_loads[node_name] / total_base_load
+        # Calculate the specific EV load curve for this region
+        ev_load_profile_for_region = ev_charging_load * proportion
+
+        # Attach to the specific asset
+        target_found = False
+        for asset_name, asset_data in node_data['assets'].items():
+            # Try to match the logic above to find the same asset
+            is_base = 'base_load' in asset_name.lower() if 'base_load' in str(node_data['assets']) else True
+
+            if asset_data.get('_class') == 'Load' and is_base:
+                # Get existing profile (WHICH IS NOW ALREADY SLICED to num_hours)
+                existing_profile = asset_data.get('profile', None)
+
+                # Handle string references to shared profiles
+                if isinstance(existing_profile, str):
+                    existing_profile = node_data.get('profiles', {}).get(existing_profile)
+
+                if existing_profile is not None:
+                    # Convert to numpy for addition
+                    existing_arr = np.array(existing_profile)
+
+                    # Get existing capacity (in Watts, negative for loads)
+                    existing_capacity = asset_data.get('installed_capacity', 0)
+                    existing_capacity_abs = abs(existing_capacity)
+
+                    # Ensure lengths match (Diagnostic)
+                    if len(existing_arr) != len(ev_load_profile_for_region):
+                        # If this happens, slice_graph_profiles failed or EV load is wrong size
+                        print(f"  ERROR: Length mismatch at {asset_name}. Profile: {len(existing_arr)}, EV: {len(ev_load_profile_for_region)}")
+                        # Force slice to be safe
+                        min_len = min(len(existing_arr), len(ev_load_profile_for_region))
+                        existing_arr = existing_arr[:min_len]
+                        ev_load_profile_for_region = ev_load_profile_for_region[:min_len]
+
+                    # CRITICAL FIX: Convert per-unit profile to absolute, add EV load, convert back
+                    # existing_arr is per-unit (0-1), capacity is in Watts
+                    # Step 1: Convert to absolute load (Watts)
+                    existing_load_abs = existing_arr * existing_capacity_abs
+
+                    # Step 2: Add EV load (already in absolute Watts)
+                    new_load_abs = existing_load_abs + ev_load_profile_for_region
+
+                    # Step 3: Calculate new capacity (add peak EV load proportion)
+                    ev_capacity_for_region = ev_load_profile_for_region.max()
+                    new_capacity_abs = existing_capacity_abs + ev_capacity_for_region
+
+                    # Step 4: Convert back to per-unit profile
+                    # Avoid division by zero
+                    if new_capacity_abs > 0:
+                        new_profile = new_load_abs / new_capacity_abs
+                    else:
+                        new_profile = existing_arr  # Fallback
+
+                    # Update the asset
+                    asset_data['profile'] = new_profile.tolist()
+                    # Update capacity (keep original sign - negative for loads)
+                    asset_data['installed_capacity'] = -new_capacity_abs if existing_capacity < 0 else new_capacity_abs
+
+                    target_found = True
+                    # Only add to one asset per node to avoid double counting if multiple match
+                    break
+
+        if not target_found:
+            print(f"  Warning: Could not add EV load to node {node_name}")
+
+    return graph
+
+
+===== CELL 13 =====
+# Quick notebook-only CAPEX correction (does not modify source files)
+
+APPLY_QUICK_CAPEX_FIX = True
+
+# Multipliers based on current data issues:
+# wind/solar likely 1000x too low (from /1e6 vs /1e3 conversion)
+# battery currently 8.33e-5 $/W but should be ~4.8 $/W for $1200/kWh, 4h => 57600x
+WIND_SOLAR_MULT = 1000.0
+BATTERY_MULT = 2.1 / (1200 / (4 * 3.6e6)) #57600.0
+
+if APPLY_QUICK_CAPEX_FIX:
+    changed = {"wind": 0, "solar": 0, "battery": 0}
+    samples = {}
+
+    for node_name, node_data in graph._node.items():
+        for asset_name, asset_data in node_data.get("assets", {}).items():
+            fuel = (asset_data.get("fuel") or asset_data.get("type") or "").lower()
+            capex_capacity = asset_data.get("capex_capacity", 0)
+            capex_cost = asset_data.get("capex_cost", 0)
+
+            # Only touch expandable optional assets
+            if not asset_name.startswith("optional_"):
+                continue
+            if capex_capacity in (0, None):
+                continue
+            if capex_cost in (0, None):
+                continue
+
+            if fuel in ("wind", "solar"):
+                old = float(capex_cost)
+                asset_data["capex_cost"] = old * WIND_SOLAR_MULT
+                changed[fuel] += 1
+                samples.setdefault(fuel, (old, asset_data["capex_cost"]))
+
+            elif fuel == "battery" or asset_data.get("_class") == "Store":
+                old = float(capex_cost)
+                asset_data["capex_cost"] = old * BATTERY_MULT
+                changed["battery"] += 1
+                samples.setdefault("battery", (old, asset_data["capex_cost"]))
+
+    print("Applied quick CAPEX fix:")
+    print(f"  wind assets changed:    {changed['wind']}")
+    print(f"  solar assets changed:   {changed['solar']}")
+    print(f"  battery assets changed: {changed['battery']}")
+    for k, (o, n) in samples.items():
+        print(f"  sample {k}: {o:.6e} -> {n:.6e} $/W")
+else:
+    print("Quick CAPEX fix skipped.")
+
+===== CELL 15 =====
+python : Traceback (most recent call last):
+At C:\Users\Grant\AppData\Local\Temp\ps-script-a5cce494-df69-4ea9-93a9-a38c4e8d810b.ps1:95 char:107
++ ... ontent -Path $tmp -Value $py -Encoding UTF8; python $tmp 2>&1 | Out-F ...
++                                                  ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\GitHub\good_model\.tmp_read_key_cells.py", line 9, in <module>
+    print(s)
+  File "C:\Program 
+Files\WindowsApps\PythonSoftwareFoundation.Python.3.11_3.11.2544.0_x64__qbz5n2kfra8p0\Lib\encodings\cp1252.py", line 
+19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 4588-4589: character maps to <undefined>

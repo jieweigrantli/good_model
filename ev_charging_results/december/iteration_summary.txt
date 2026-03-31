@@ -1,0 +1,79 @@
+
+======================================================================
+  ITERATION CONFIGURATION
+======================================================================
+  Season          : December
+  Start hour      : 8016
+  Num hours       : 168
+  CAPEX expansion : True
+  Amortization    : 20 yr
+  Solver          : gurobi (solver_io=mps)
+
+======================================================================
+  OBJECTIVE VALUES
+======================================================================
+  Baseline : 1.4583e+08
+  EV       : 8.4729e+07
+  Diff     : -6.1104e+07
+
+======================================================================
+  CAPEX EXPANSION
+======================================================================
+  Baseline: 43936.9 MW total
+    battery             :      633.1 MW
+    wind                :    43303.8 MW
+  EV: 768.9 MW total
+    wind                :      768.9 MW
+
+======================================================================
+  MARGINAL GENERATION & EMISSIONS
+======================================================================
+       fuel  marginal_generation_kwh  co2_emissions_kg  nox_emissions_kg  so2_emissions_kg
+    biomass             1.078244e+07      7.904537e+04       3648.146774       1999.774489
+       coal            -3.228089e+07     -1.728387e+06      -8584.889906     -12024.180010
+ geothermal             0.000000e+00      0.000000e+00          0.000000          0.000000
+      hydro            -2.769244e+06      0.000000e+00          0.000000          0.000000
+     import             0.000000e+00      0.000000e+00          0.000000          0.000000
+natural gas             1.390884e+08      4.659402e+07     151644.202175      17801.261225
+ non-fossil            -1.071424e+05      0.000000e+00          0.000000          0.000000
+    nuclear             0.000000e+00      0.000000e+00          0.000000          0.000000
+        oil             0.000000e+00      0.000000e+00          0.000000          0.000000
+      solar             0.000000e+00      0.000000e+00          0.000000          0.000000
+      waste            -5.720000e+04     -2.065813e+04       -149.835596       -103.510006
+       wind             7.083870e+07      0.000000e+00          0.000000          0.000000
+
+  Total gen : 185.50 GWh
+  Total CO2 : 44.9240 million kg
+
+======================================================================
+  RPS COMPLIANCE
+======================================================================
+state scenario  renewable_pct  target_pct  gap_pct compliant
+   AZ baseline          32.74        8.67  24.0735      True
+   CA baseline          47.21       44.76   2.4527      True
+   CO baseline          77.85       19.57  58.2831      True
+   ID baseline          47.65         NaN      NaN      None
+   MT baseline          69.80         NaN      NaN      None
+   NE baseline         100.00         NaN      NaN      None
+   NM baseline          87.47       36.37  51.1026      True
+   NV baseline          49.55       29.17  20.3798      True
+   OR baseline          48.21       20.26  27.9484      True
+   SD baseline          86.32         NaN      NaN      None
+   TX baseline         100.00        3.99  96.0081      True
+   UT baseline          27.03         NaN      NaN      None
+   WA baseline          31.05       12.98  18.0642      True
+   WY baseline          94.63         NaN      NaN      None
+   AZ       ev          32.81        8.67  24.1364      True
+   CA       ev          45.85       44.76   1.0857      True
+   CO       ev          78.25       19.57  58.6789      True
+   ID       ev          47.69         NaN      NaN      None
+   MT       ev          69.94         NaN      NaN      None
+   NE       ev         100.00         NaN      NaN      None
+   NM       ev          89.24       36.37  52.8747      True
+   NV       ev          49.63       29.17  20.4564      True
+   OR       ev          50.16       20.26  29.8990      True
+   SD       ev          86.32         NaN      NaN      None
+   TX       ev         100.00        3.99  96.0081      True
+   UT       ev          27.89         NaN      NaN      None
+   WA       ev          31.13       12.98  18.1524      True
+   WY       ev          94.40         NaN      NaN      None

@@ -865,9 +865,21 @@ def long_wide(df):
 
 def assign_em_rates(input_df, input_df_old):
 
+    # eGRID 2023 may contain string placeholders in numeric columns.
+    # Coerce to numeric so missing checks and range filters work reliably.
+    numeric_cols = [
+        'PLCO2RTA', 'PLSO2RTA', 'PLCH4RTA', 'PLN2ORTA', 'PLNOXRTA',
+        'Capacity', 'HeatRate', 'PLNGENAN'
+    ]
+    for col in numeric_cols:
+        if col in input_df.columns:
+            input_df[col] = pd.to_numeric(input_df[col], errors='coerce')
+        if col in input_df_old.columns:
+            input_df_old[col] = pd.to_numeric(input_df_old[col], errors='coerce')
+
     input_df.loc[input_df["FuelType"].isin(["Pumps", "Hydro", "Geothermal", "Non-Fossil", "EnerStor", "Nuclear", "Solar", "Wind"]), ["PLCO2RTA", "PLSO2RTA", "PLCH4RTA", "PLN2ORTA", "PLNOXRTA"]] = 0
     for r in range(input_df.shape[0]):
-        if np.isnan(input_df.at[r, 'PLCO2RTA']):
+        if pd.isna(input_df.at[r, 'PLCO2RTA']):
             # Expand search to the same state if no similar plants found in the same state
             similar_rows = input_df[(input_df['FuelType'] == input_df.at[r, 'FuelType']) &
                                     (input_df['StateName'] == input_df.at[r, 'StateName']) &
@@ -879,7 +891,7 @@ def assign_em_rates(input_df, input_df_old):
 
             input_df.loc[r, ['PLCO2RTA', 'PLNOXRTA', 'PLCH4RTA', 'PLN2ORTA', 'PLSO2RTA']] = similar_rows[['PLCO2RTA', 'PLNOXRTA', 'PLCH4RTA', 'PLN2ORTA', 'PLSO2RTA']].mean()
 
-        if np.isnan(input_df.at[r, 'PLCO2RTA']):
+        if pd.isna(input_df.at[r, 'PLCO2RTA']):
             # Expand search to the same NERC region if no similar plants found in the same NERC region
             similar_rows = input_df[(input_df['FuelType'] == input_df.at[r, 'FuelType']) &
                                     (input_df['NERC'] == input_df.at[r, 'NERC']) &
@@ -891,7 +903,7 @@ def assign_em_rates(input_df, input_df_old):
 
             input_df.loc[r, ['PLCO2RTA', 'PLNOXRTA', 'PLCH4RTA', 'PLN2ORTA', 'PLSO2RTA']] = similar_rows[['PLCO2RTA', 'PLNOXRTA', 'PLCH4RTA', 'PLN2ORTA', 'PLSO2RTA']].mean()
 
-        if np.isnan(input_df.at[r, 'PLCO2RTA']):
+        if pd.isna(input_df.at[r, 'PLCO2RTA']):
             # Expand search to all similar plants if no similar plants found in entire state
             similar_rows = input_df[(input_df['FuelType'] == input_df.at[r, 'FuelType']) &
                                     (input_df['PlantType'] == input_df.at[r, 'PlantType']) &
@@ -903,7 +915,7 @@ def assign_em_rates(input_df, input_df_old):
             input_df.loc[r, ['PLCO2RTA', 'PLNOXRTA', 'PLCH4RTA', 'PLN2ORTA', 'PLSO2RTA']] = similar_rows[['PLCO2RTA', 'PLNOXRTA', 'PLCH4RTA', 'PLN2ORTA', 'PLSO2RTA']].mean()
 
 
-        if np.isnan(input_df.at[r, 'PLCO2RTA']):
+        if pd.isna(input_df.at[r, 'PLCO2RTA']):
             # Expand search to the same state if no similar plants found in the same state
             similar_rows = input_df[(input_df['FuelType'] == input_df.at[r, 'FuelType']) &
                                     (input_df['StateName'] == input_df.at[r, 'StateName']) &
@@ -911,7 +923,7 @@ def assign_em_rates(input_df, input_df_old):
 
             input_df.loc[r, ['PLCO2RTA', 'PLNOXRTA', 'PLCH4RTA', 'PLN2ORTA', 'PLSO2RTA']] = similar_rows[['PLCO2RTA', 'PLNOXRTA', 'PLCH4RTA', 'PLN2ORTA', 'PLSO2RTA']].mean()
 
-        if np.isnan(input_df.at[r, 'PLCO2RTA']):
+        if pd.isna(input_df.at[r, 'PLCO2RTA']):
             # Expand search to the same NERC region if no similar plants found in the same NERC region
             similar_rows = input_df[(input_df['FuelType'] == input_df.at[r, 'FuelType']) &
                                     (input_df['NERC'] == input_df.at[r, 'NERC']) &
@@ -919,7 +931,7 @@ def assign_em_rates(input_df, input_df_old):
 
             input_df.loc[r, ['PLCO2RTA', 'PLNOXRTA', 'PLCH4RTA', 'PLN2ORTA', 'PLSO2RTA']] = similar_rows[['PLCO2RTA', 'PLNOXRTA', 'PLCH4RTA', 'PLN2ORTA', 'PLSO2RTA']].mean()
 
-        if np.isnan(input_df.at[r, 'PLCO2RTA']):
+        if pd.isna(input_df.at[r, 'PLCO2RTA']):
             # Expand search to all similar plants if no similar plants found in entire state
             similar_rows = input_df[(input_df['FuelType'] == input_df.at[r, 'FuelType']) &
                                     (input_df['PlantType'] == input_df.at[r, 'PlantType'])]
