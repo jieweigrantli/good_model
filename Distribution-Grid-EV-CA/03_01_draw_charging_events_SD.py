@@ -18,8 +18,8 @@ import pandas as pd
 
 from common import read_rds_like, save_rds_like
 
-IN_PATH = "data/mobility data/CSTDM processed/EV trips_new_SDPTM_sample42.pkl"
-OUT_DIR = "data/mobility data/CSTDM processed"
+IN_PATH = "data/mobility_data/CSTDM_processed/EV trips_new_SDPTM_sample42.pkl"
+OUT_DIR = "data/mobility_data/CSTDM_processed"
 
 
 def main() -> None:

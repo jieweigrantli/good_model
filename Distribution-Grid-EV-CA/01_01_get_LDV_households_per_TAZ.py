@@ -17,17 +17,12 @@ import pandas as pd
 
 from common import fread_all_in_dir
 
-# ---------------------------------------------------------------------------
-# Paths (mirror the R script)
-# ---------------------------------------------------------------------------
-WORK_ROOT = r"E:\GitHub\good_model\Distribution-Grid-EV-CA"
+SDPTM_DIR = "data/mobility_data/CSTDM/SDPTM"
+LDPTM_TRIPS = "data/mobility_data/CSTDM/LDPTM/LDPTM_Trips.csv"
+LDPTM_ACCEGR = "data/mobility_data/CSTDM/LDPTM/LDPTM_AccEgr.csv"
+ETM_TRIPS = "data/mobility_data/CSTDM/ETM/trips_Ext.csv"
 
-SDPTM_DIR = r"E:\Data\CSTDM_OD\SDPTM"
-LDPTM_TRIPS = r"E:\Data\CSTDM_OD\LDPTM\LDPTM_Trips.csv"
-LDPTM_ACCEGR = r"E:\Data\CSTDM_OD\LDPTM\LDPTM_AccEgr.csv"
-ETM_TRIPS = r"E:\Data\CSTDM_OD\ETM\trips_Ext.csv"
-
-OUT_DIR = r"E:\GitHub\good_model\Distribution-Grid-EV-CA\data\mobility_data\CSTDM_processed"
+OUT_DIR = "data/mobility_data/CSTDM_processed"
 LDV_MODES = {"SOV", "HOV2", "HOV3"}
 
 

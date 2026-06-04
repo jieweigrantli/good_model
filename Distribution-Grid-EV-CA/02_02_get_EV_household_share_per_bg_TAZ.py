@@ -10,13 +10,13 @@ import os
 import numpy as np
 import pandas as pd
 
-HH_ALL_TRACT = "data/mobility data/EV Toolbox/households_all_by_tract.csv"
-HH_EV_TRACT = "data/mobility data/EV Toolbox/evhouseholds_by_tract_acc2_2011.csv"
+HH_ALL_TRACT = "data/mobility_data/EV_Toolbox/households_all_by_tract.csv"
+HH_EV_TRACT = "data/mobility_data/EV_Toolbox/evhouseholds_by_tract_acc2_2011.csv"
 POP_BG_TRACT = "data/mapping/census bg to tract 2010/popluation share bg to tract 2010.csv"
 MAP_BG_TAZ = "data/mapping/census bg to tract 2010/map bg to TAZ 2010.csv"
 
-OUT_DIR = "data/mobility data/EV Toolbox"
-YEARS = range(2022, 2046)
+OUT_DIR = "data/mobility_data/EV_Toolbox"
+YEARS = range(2020, 2045)
 
 
 def main() -> None:

@@ -22,10 +22,10 @@ def _geoid_short(s: pd.Series, strip_last: int = 0) -> pd.Series:
     R is 1-indexed; ``substr(x, 11, end)`` keeps characters from position 11 to end.
     In Python that's ``x[10:end]``.
     """
-    s = s.astype(str)
+    tail = s.astype(str).str.slice(10)
     if strip_last > 0:
-        return s.str.slice(10, s.str.len() - strip_last)
-    return s.str.slice(10)
+        tail = tail.str.slice(0, -strip_last)
+    return tail
 
 
 def main() -> None:

@@ -11,9 +11,9 @@ import os
 import numpy as np
 import pandas as pd
 
-IN_DIR = "data/mobility data/CSTDM processed"
-SHARE_CSV = "data/mobility data/EV Toolbox/evhh_share_TAZ.csv"
-YEARS = list(range(2022, 2046))
+IN_DIR = "data/mobility_data/CSTDM_processed"
+SHARE_CSV = "data/mobility_data/EV_Toolbox/evhh_share_TAZ.csv"
+YEARS = list(range(2020, 2045))
 SEED = 42
 
 

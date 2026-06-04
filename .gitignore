@@ -139,3 +139,5 @@ dmypy.json
 .idea/
 Outputs/*.csv
 Outputs/*.html
+
+Distribution-Grid-EV-CA/data/

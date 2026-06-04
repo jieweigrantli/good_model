@@ -1,11 +1,11 @@
-Run completed at : 2026-03-27T01:20:06.653056
-Total wall time  : 46.3 min
+Run completed at : 2026-05-18T01:17:06.172368
+Total wall time  : 45.4 min
 
 Season             Baseline Obj           EV Obj     Diff (EV-BL)    CAPEX assets
 ---------------------------------------------------------------------------
-march                1.2706e+08       8.5480e+07      -4.1576e+07              80
-june                 1.4624e+08       8.7460e+07      -5.8776e+07              85
-september            1.7514e+08       1.3811e+08      -3.7031e+07              67
-december             1.4583e+08       8.4729e+07      -6.1104e+07              85
+march                1.2706e+08       8.5245e+07      -4.1811e+07              80
+june                 1.4624e+08       8.7420e+07      -5.8815e+07              85
+september            1.7514e+08       1.3819e+08      -3.6950e+07              67
+december             1.4583e+08       8.4799e+07      -6.1034e+07              85
 
 Results directory: E:\GitHub\good_model\ev_charging_results

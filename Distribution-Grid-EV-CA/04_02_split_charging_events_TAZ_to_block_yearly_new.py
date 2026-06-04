@@ -16,12 +16,12 @@ import pandas as pd
 
 from common import read_rds_like, save_rds_like
 
-EVENT_SD = "data/mobility data/CSTDM processed/charge_event_new_SDPTM_sample42_draw12.pkl"
-EVENT_LD = "data/mobility data/CSTDM processed/charge_event_new_LDPTM_sample42.pkl"
-EVENT_ETM = "data/mobility data/CSTDM processed/charge_event_new_ETM_sample42.pkl"
+EVENT_SD = "data/mobility_data/CSTDM_processed/charge_event_new_SDPTM_sample42_draw12.pkl"
+EVENT_LD = "data/mobility_data/CSTDM_processed/charge_event_new_LDPTM_sample42.pkl"
+EVENT_ETM = "data/mobility_data/CSTDM_processed/charge_event_new_ETM_sample42.pkl"
 SHARE_CSV = "data/mapping/census block to TAZ 2010/share_block vs TAZ.csv"
 
-OUT_DIR = "data/mobility data/CSTDM processed"
+OUT_DIR = "data/mobility_data/CSTDM_processed"
 YEARS = range(2022, 2046)
 
 

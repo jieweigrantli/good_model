@@ -1,0 +1,618 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{subcaption}
+
+\geometry{margin=1in}
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue, citecolor=blue}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  backgroundcolor=\color{gray!8},
+  columns=fullflexible
+}
+
+\title{Methodology: Electric Vehicle Charging Demand\\
+and Distribution Grid Congestion in California}
+\author{Replication documentation for the \texttt{Distribution-Grid-EV-CA} pipeline\\
+\small Based on R scripts in \texttt{R\_Yanning/} (Li et al., UC Davis)}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document describes the end-to-end computational pipeline used to estimate spatially and temporally resolved electric vehicle (EV) charging demand on California distribution feeders, and to assess feeder overload relative to available headroom. The workflow integrates (i)~California Statewide Travel Demand Model (CSTDM) trip tables, (ii)~census geography and EV adoption scenarios from the EV Toolbox, (iii)~empirical charging-session records, and (iv)~utility feeder baseload and capacity data. Each processing stage is specified with input/output files, key variables, governing equations, and random seeds used for reproducibility.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%==============================================================================
+\section{Introduction and study objective}
+%==============================================================================
+
+The pipeline supports the analysis in \emph{Impact of Electric Vehicle Charging Demand on Power Distribution Grid Congestion} (contact: Yanning Li, \texttt{yspli@ucdavis.edu}). The objective is to:
+
+\begin{enumerate}[noitemsep]
+  \item Assign EV adoption to synthetic households in CSTDM travel models across forecast years;
+  \item Derive EV trips and charging events by trip purpose (home, work, public);
+  \item Downscale charging events from traffic analysis zones (TAZs) to census blocks and distribution feeders;
+  \item Match events to empirical charging power profiles; and
+  \item Compare cumulative EV load against feeder headroom to quantify overload.
+\end{enumerate}
+
+Scripts are numbered by stage: \texttt{01\_xx}--\texttt{09\_xx}, where \texttt{08\_xx} and \texttt{09\_xx} produce figures and upgrade-cost estimates (not detailed here).
+
+%==============================================================================
+\section{Conceptual framework}
+%==============================================================================
+
+\subsection{Geographic hierarchy}
+
+The model links four spatial units:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Unit} & \textbf{Role} & \textbf{Typical ID field} \\
+\midrule
+Census tract & EV Toolbox adoption; population weights & \texttt{GEOIDtract} / \texttt{tract} \\
+Block group (BG) & Population share tract$\to$BG; BG$\to$TAZ map & \texttt{GEOIDbg} / \texttt{GEOID} \\
+TAZ & CSTDM \texttt{HomeZone}, trip origin $I$, destination $J$ & \texttt{TAZ} / \texttt{TAZ\_Zone} \\
+Census block & Work/public event split; feeder assignment & \texttt{GEOID10} \\
+Distribution feeder & Load, capacity, overload & \texttt{FeederID} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Travel model components (CSTDM)}
+
+\begin{itemize}[noitemsep]
+  \item \textbf{SDPTM} --- Short-Distance Passenger Travel Model (intrazonal/interzonal daily trips).
+  \item \textbf{LDPTM} --- Long-Distance Passenger Travel Model (intercity trips; includes \texttt{LDPTM\_AccEgr} access/egress legs).
+  \item \textbf{ETM} --- External Travel Model (trips entering California).
+\end{itemize}
+
+Light-duty vehicle (LDV) modes are \texttt{SOV}, \texttt{HOV2}, and \texttt{HOV3}.
+
+\subsection{Charging location types}
+
+Trips are tagged with a charging-purpose category \texttt{ChargeType}:
+\begin{itemize}[noitemsep]
+  \item \textbf{H} --- Home;
+  \item \textbf{W} --- Work;
+  \item \textbf{P} --- Public (other activities).
+\end{itemize}
+
+\subsection{Forecast horizon}
+
+Unless noted otherwise, scripts loop over years $y \in \{2022,\ldots,2045\}$ (24 years). EV household sampling uses random seed~42; charging-location draws use seed~12; block splitting uses seeds~66, 99; empirical session matching uses seed~36.
+
+\subsection{Pipeline flow}
+
+\begin{enumerate}[label=\textbf{Stage \arabic*:}, leftmargin=*]
+  \item Extract LDV household home TAZs from CSTDM (\texttt{01\_01}).
+  \item Compute block-group population shares within tracts (\texttt{02\_01}).
+  \item Distribute tract-level EV/all households to BGs and TAZs (\texttt{02\_02}).
+  \item Sample new EV households per TAZ per year (\texttt{02\_03}).
+  \item Filter EV trips and assign charge types (\texttt{02\_04}).
+  \item Generate charging events: SD survey-based; LD/ETM route-based (\texttt{03\_01}, \texttt{03\_02}).
+  \item Block--TAZ population/job shares (\texttt{04\_01}); split events to blocks (\texttt{04\_02}); map blocks to feeders (\texttt{04\_03}).
+  \item Match empirical sessions (\texttt{05\_02}); aggregate hourly profiles (\texttt{06\_01}).
+  \item Combine with grid baseload/capacity (\texttt{07\_05}).
+\end{enumerate}
+
+%==============================================================================
+\section{Stage 01: LDV household home zones}
+%==============================================================================
+\subsection{Script}
+\texttt{01\_01\_get\_LDV\_households\_per\_TAZ.R}
+
+\subsection{Purpose}
+Build pools of unique synthetic households (\texttt{SerialNo}) and their home TAZ (\texttt{HomeZone}) for each CSTDM component.
+
+\subsection{Inputs}
+\begin{longtable}{@{}p{0.35\linewidth}p{0.58\linewidth}@{}}
+\toprule
+\textbf{Source} & \textbf{Description} \\
+\midrule
+\endhead
+\texttt{CSTDM/SDPTM/*.csv} & All trip files in SDPTM directory \\
+\texttt{LDPTM/LDPTM\_Trips.csv} & Long-distance trips \\
+\texttt{LDPTM/LDPTM\_AccEgr.csv} & Access/egress legs \\
+\texttt{ETM/trips\_Ext.csv} & External trips \\
+\bottomrule
+\end{longtable}
+
+\subsection{Filters}
+Only light-duty auto trips are retained; each row below states which records are kept for that CSTDM component.
+\begin{align}
+  \text{SDPTM, LDPTM trips:} \quad & \texttt{Mode} \in \{\texttt{SOV}, \texttt{HOV2}, \texttt{HOV3}\}
+  \intertext{Short- and long-distance main legs include single-occupant and high-occupancy vehicle modes only.}
+  \text{LDPTM AccEgr:} \quad & (\texttt{DPurp}=\texttt{Access} \land \texttt{AccMode}=\texttt{Drive\_Park}) \\
+  & \lor\; (\texttt{OPurp}=\texttt{Egress} \land \texttt{EgrMode}=\texttt{Rent\_Car})
+  \intertext{Access/egress legs are kept when they represent drive--park access or rental-car egress to the long-distance trip.}
+  \text{ETM:} \quad & \texttt{ActorType} \in \{\texttt{CarLong}, \texttt{CarLocal}\} \\
+  & \land\; \texttt{Mode} \in \{\texttt{SOV}, \texttt{HOV2}, \texttt{HOV3}\} \land \texttt{DPurp}=\texttt{I}
+  \intertext{External trips are limited to inbound car trips by light-duty modes.}
+\end{align}
+
+\subsection{Outputs}
+\begin{lstlisting}
+data/mobility_data/CSTDM_processed/SDPTM_hh_home_TAZ.csv
+data/mobility_data/CSTDM_processed/LDPTM_hh_home_TAZ.csv
+data/mobility_data/CSTDM_processed/LDPTM_AccEgr_hh_home_TAZ.csv
+data/mobility_data/CSTDM_processed/ETM_hh_home_TAZ.csv
+\end{lstlisting}
+
+Columns: \texttt{SerialNo}, \texttt{HomeZone}.
+
+%==============================================================================
+\section{Stage 02: EV adoption, geography, and trips}
+%==============================================================================
+
+\subsection{Stage 02\_01: Tract to block-group population share}
+\textbf{Script:} \texttt{02\_01\_map\_tract\_to\_bg\_2010.R}
+
+\subsubsection{Inputs}
+\begin{itemize}[noitemsep]
+  \item \texttt{Census Tract Population\_2010\_short.csv} --- columns \texttt{GEOID}, \texttt{Population}
+  \item \texttt{Census Block Group Population\_2010\_short.csv} --- same structure
+\end{itemize}
+
+\subsubsection{GEOID parsing}
+Census full GEOIDs use prefix \texttt{1400000US}; scripts extract numeric IDs:
+\begin{align}
+  \texttt{GEOIDshort} &= \text{numeric}(\texttt{substr}(\texttt{GEOID}, 11, \text{end}))
+  \intertext{The block-group identifier drops the fixed census prefix and keeps the remaining digits.}
+  \texttt{GEOIDtract (from BG)} &= \text{numeric}(\texttt{substr}(\texttt{GEOID}, 11, \text{end}-1))
+  \intertext{The parent tract ID is obtained by removing the last digit from the block-group GEOID.}
+\end{align}
+
+\subsubsection{Population share}
+For each block group $b$ in tract $t$, the share is the block group's fraction of tract population (zero if the tract has no population):
+\begin{equation}
+  \text{share}_{b,t} = \begin{cases}
+    \dfrac{P_b}{P_t} & P_t > 0 \\
+    0 & P_t = 0
+  \end{cases}
+\end{equation}
+\noindent This share is later used to split tract-level household counts across block groups.
+Rows with invalid \texttt{tract\_pop} strings are repaired by truncating trailing characters before recomputing shares.
+
+\subsubsection{Output}
+\texttt{popluation share bg to tract 2010.csv}: \texttt{GEOIDbg}, \texttt{GEOIDtract}, \texttt{bg\_pop}, \texttt{tract\_pop}, \texttt{share}.
+
+%------------------------------------------------------------------------------
+\subsection{Stage 02\_02: EV household shares at TAZ}
+\textbf{Script:} \texttt{02\_02\_get\_EV household share\_per\_bg\_TAZ.R}
+
+\subsubsection{Inputs}
+\begin{itemize}[noitemsep]
+  \item \texttt{households\_all\_by\_tract.csv} --- \texttt{tract}, \texttt{households}
+  \item \texttt{evhouseholds\_by\_tract\_acc2\_2011.csv} --- \texttt{tract}, \texttt{year}, \texttt{households}
+  \item \texttt{popluation share bg to tract 2010.csv}
+  \item \texttt{map bg to TAZ 2010.csv} --- \texttt{GEOID} (BG), \texttt{TAZ\_Zone}
+\end{itemize}
+
+\subsubsection{Tract to block group (EV households)}
+Replicate static shares for each year $y$:
+\begin{equation}
+  \text{EVhh}_{b,y} = \text{EVhh}_{t,y} \times \text{share}_{b,t}
+\end{equation}
+\noindent Tract-level EV households are allocated to each block group in proportion to its 2010 population share.
+
+\subsubsection{All households (tract total, then disaggregate)}
+\begin{align}
+  \text{hh}_{t} &= \sum_{\text{rows}} \text{households}
+  \intertext{Total households in a tract are summed across input rows for that tract.}
+  \text{hh}_{b} &= \text{hh}_{t} \times \text{share}_{b,t}
+  \intertext{All households are then disaggregated to block groups using the same population shares as for EV households.}
+\end{align}
+
+\subsubsection{TAZ aggregation}
+\begin{align}
+  \text{EVhh}_{\text{TAZ},y} &= \sum_{b \in \text{TAZ}} \text{EVhh}_{b,y}
+  \intertext{EV households are summed over all block groups mapped to the same TAZ.}
+  \text{hh}_{\text{TAZ}} &= \sum_{b \in \text{TAZ}} \text{hh}_{b}
+  \intertext{All households in the TAZ are obtained by the same summation over member block groups.}
+  \text{EVhh\_share}_{\text{TAZ},y} &= \min\!\left(1,\; \frac{\text{EVhh}_{\text{TAZ},y}}{\text{hh}_{\text{TAZ}}}\right)
+  \intertext{The TAZ adoption rate is the EV-to-all household ratio, capped at 100\%.}
+\end{align}
+with $\text{EVhh\_share}=0$ if $\text{hh}_{\text{TAZ}}=0$.
+
+\subsubsection{Outputs}
+\begin{itemize}[noitemsep]
+  \item \texttt{evhh\_tract\_bg\_ACC2.csv}
+  \item \texttt{allhh\_tract\_bg.csv}
+  \item \texttt{evhh\_share\_TAZ.csv} --- \texttt{year}, \texttt{TAZ}, \texttt{EVhh\_TAZ}, \texttt{hh\_TAZ}, \texttt{EVhh\_share}
+\end{itemize}
+
+%------------------------------------------------------------------------------
+\subsection{Stage 02\_03: Sample new EV households per TAZ}
+\textbf{Script:} \texttt{02\_03\_sample\_EV hh.R}
+
+\subsubsection{California-wide share (ETM only)}
+\begin{equation}
+  \text{EVhh\_share}^{\text{CA}}_y = \frac{\sum_{\text{TAZ}} \text{EVhh}_{\text{TAZ},y}}{\sum_{\text{TAZ}} \text{hh}_{\text{TAZ}}}
+\end{equation}
+\noindent External-travel households use a statewide EV adoption rate computed as total EV households divided by total households across all TAZs.
+
+\subsubsection{Expected EV count per TAZ}
+For each home zone $z$ and year $y$, with $n_{\text{hh},z}$ = count of LDV households in that TAZ:
+\begin{align}
+  n^{\text{EV}}_{z,y} &= n_{\text{hh},z} \times \text{EVhh\_share}_{z,y} \quad \text{(SD/LD/LD-AE)}
+  \intertext{For in-state models, expected EV count equals the TAZ LDV pool times the local TAZ adoption share.}
+  n^{\text{EV}}_{z,y} &= n_{\text{hh},z} \times \text{EVhh\_share}^{\text{CA}}_y \quad \text{(ETM)}
+  \intertext{For external trips, the same pool is scaled by the California-wide share instead of a TAZ-specific share.}
+\end{align}
+
+\subsubsection{New EV households (year-over-year)}
+Within each TAZ $z$, ordered by year:
+\begin{align}
+  \Delta n^{\text{EV,new}}_{z,y} &= n^{\text{EV}}_{z,y} - n^{\text{EV}}_{z,y-1}, \quad y>2022
+  \intertext{After the first forecast year, new EVs are the increase in expected EV count relative to the prior year.}
+  \Delta n^{\text{EV,new}}_{z,2022} &= n^{\text{EV}}_{z,2022}
+  \intertext{In 2022, all expected EV households in the TAZ are treated as newly adopting.}
+  n^{\text{EV,new}}_{z,y} &= \lfloor \Delta n^{\text{EV,new}}_{z,y} \rfloor
+  \intertext{The number actually sampled is the non-negative integer part of the year-over-year increment.}
+\end{align}
+
+\subsubsection{Sampling without replacement}
+Function \texttt{sample.EVhh} (seed~42): for each year, sample $n^{\text{EV,new}}_{z,y}$ distinct \texttt{SerialNo} from remaining pool in TAZ $z$; remove sampled IDs from pool for future years.
+
+\subsubsection{Outputs}
+\begin{lstlisting}
+EVhh_new_SDPTM_sample42.csv
+EVhh_new_LDPTM_sample42.csv
+EVhh_new_LDPTM_AccEgr_sample42.csv
+EVhh_new_ETM_sample42.csv
+\end{lstlisting}
+Columns: \texttt{HomeZone}, \texttt{hhID} (=\texttt{SerialNo}), \texttt{year}.
+
+%------------------------------------------------------------------------------
+\subsection{Stage 02\_04: EV trip extraction}
+\textbf{Script:} \texttt{02\_04\_get\_EV trips.R}
+
+\subsubsection{Trip purpose $\to$ charge type mappings}
+
+\textbf{SDPTM:}
+\begin{center}
+\small
+\begin{tabular}{ll}
+\toprule
+\texttt{DPurp} & \texttt{ChargeType} \\
+\midrule
+O & H \\
+W, P & W \\
+S,H,T,C,L,R,K,Z & P \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{LDPTM:} Bus/VFR$\to$W; Rec$\to$P; Com$\to$W; Oth$\to$P.
+
+\textbf{LDPTM AccEgr:} adds Access$\to$P.
+
+\textbf{ETM:} all trips $\texttt{ChargeType}=\texttt{P}$; distance from TAZ matrix:
+\begin{equation}
+  \texttt{Dist}_{\text{miles}} = \frac{\texttt{distance}_{\text{meters}}}{1609.344}
+\end{equation}
+\noindent External-trip length is converted from network skims in meters to miles using the standard meters-per-mile factor.
+
+\subsubsection{Outputs (RDS)}
+\texttt{EV trips\_new\_SDPTM\_sample42.rds}, \texttt{EV trips\_new\_LDPTM\_sample42.rds}, \texttt{EV trips\_new\_LDPTM\_AccEgr\_sample42.rds}, \texttt{EV trips\_new\_EXT\_sample42.rds}.
+
+Key trip columns: \texttt{SerialNo}, \texttt{Person}, \texttt{Tour}, \texttt{Trip}, \texttt{DPurp}, \texttt{I}, \texttt{J}, \texttt{Mode}, \texttt{Dist}, \texttt{Time}, \texttt{year}, \texttt{ChargeType}.
+
+%==============================================================================
+\section{Stage 03: Charging events}
+%==============================================================================
+
+\subsection{Stage 03\_01: Short-distance charging (SDPTM)}
+\textbf{Script:} \texttt{03\_01\_draw\_charging events\_SD.R}
+
+\subsubsection{Survey charging-location shares}
+Seven composite location patterns over $\{\text{H},\text{W},\text{P}\}$ with probabilities:
+\begin{center}
+\begin{tabular}{cccc|c}
+\toprule
+H & W & P & Share \\
+\midrule
+1&0&0 & 0.53 \\
+0&1&0 & 0.08 \\
+0&0&1 & 0.03 \\
+1&1&0 & 0.16 \\
+1&0&1 & 0.13 \\
+0&1&1 & 0.03 \\
+1&1&1 & 0.04 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsubsection{Tour-level procedure}
+\begin{enumerate}[noitemsep]
+  \item Assign \texttt{TourID} per (\texttt{SerialNo}, \texttt{Person}, \texttt{Tour}).
+  \item For each tour, enumerate which of $\{\text{H},\text{W},\text{P}\}$ appear among trip purposes; form valid location patterns; normalize survey shares to tour-specific probabilities.
+  \item Draw one pattern per tour (seed~12).
+  \item A trip generates a charging event if its \texttt{ChargeType} matches an active location in the drawn pattern.
+  \item Sum trip distances by charging event; attach destination TAZ \texttt{J}, time, year.
+\end{enumerate}
+
+\subsubsection{Output}
+\texttt{charge\_event\_new\_SDPTM\_sample42\_draw12.rds}: \texttt{TourID}, \texttt{chargeEvent}, \texttt{Trip}, \texttt{chargeDist}, \texttt{ChargeType}, \texttt{J}, \texttt{Time}, \texttt{year}.
+
+%------------------------------------------------------------------------------
+\subsection{Stage 03\_02: Long-distance and external charging}
+\textbf{Script:} \texttt{03\_02\_charging events\_LD\_ETM.R}
+
+\subsubsection{TAZ distance matrices}
+Parsed CSV folders: \texttt{parsed\_100000\_LDPTM}, \texttt{parsed\_100000\_ETM}. Columns: \texttt{from}, \texttt{to}, \texttt{distance}, \texttt{TAZ12,} (renamed \texttt{TAZway}).
+
+Each OD pair $(I,J)$ may have multiple rows (one per intermediate TAZ on path).
+
+\subsubsection{How this codebase generates \texttt{data/mobility\_data/TAZ\_distance}}
+The Python builder \texttt{build\_taz\_path\_skims.py} creates both parsed folders directly from local GIS and CSTDM trip inputs.
+
+\paragraph{Inputs}
+\begin{itemize}[noitemsep]
+  \item Network links: \texttt{data/shps/CSTDM\_sf.gpkg} with node IDs \texttt{A,B} and link weight \texttt{DISTANCE} (miles);
+  \item TAZ polygons: \texttt{data/shps/taz\_id.shp} (field \texttt{TAZ12});
+  \item TAZ centroids: \texttt{data/shps/TAZ\_centroid\_sf.gpkg} (fallback to polygon centroids if unavailable);
+  \item OD pairs from CSTDM trips:
+  \begin{itemize}[noitemsep]
+    \item LDPTM: unique \texttt{(I,J)} from \texttt{LDPTM\_Trips.csv};
+    \item ETM: unique inbound \texttt{(I,J)} where \texttt{DPurp='I'} from \texttt{trips\_Ext.csv}.
+  \end{itemize}
+\end{itemize}
+
+\paragraph{Algorithm}
+\begin{enumerate}[noitemsep]
+  \item Build a directed graph from links using \texttt{DISTANCE} as edge weight (miles).
+  \item Derive node coordinates from line endpoints and snap each TAZ centroid to its nearest network node (KD-tree).
+  \item Assign each directed link to a TAZ by midpoint spatial join (\texttt{within}), then nearest-TAZ fallback for unmatched links.
+  \item For each origin zone, run one Dijkstra shortest-path tree and reconstruct node paths to all required destinations.
+  \item Convert path length to meters:
+  \begin{equation}
+    \texttt{distance}_{\text{meters}} = \texttt{distance}_{\text{miles}} \times 1609.344
+  \end{equation}
+  \noindent Output distance is stored once per OD pair and repeated for each path row.
+  \item Convert node path to TAZ sequence by mapped link TAZs, dropping consecutive duplicates, and forcing first/last TAZ as origin/destination.
+\end{enumerate}
+
+\paragraph{ETM external-zone handling}
+ETM origins \texttt{I} are external IDs (1--51), not California internal TAZ IDs (100+). The builder maps each ETM origin to a California entry TAZ using the ETM \texttt{Int} region label (with optional \texttt{(I,J)} overrides), then routes from that entry TAZ to destination \texttt{J} while keeping output \texttt{from=I} in the parsed file.
+
+\paragraph{Outputs and run commands}
+\begin{lstlisting}
+python build_taz_path_skims.py --trip-set ld
+python build_taz_path_skims.py --trip-set etm
+python build_taz_path_skims.py --trip-set both
+\end{lstlisting}
+Outputs are chunked CSVs (\texttt{part\_00001.csv}, \ldots) under:
+\begin{lstlisting}
+data/mobility_data/TAZ_distance/parsed_100000_LDPTM/
+data/mobility_data/TAZ_distance/parsed_100000_ETM/
+\end{lstlisting}
+
+\paragraph{Practical caveat}
+Distances and pair coverage can differ from externally supplied route tables (for example \texttt{all\_routes.csv} or \texttt{parsed\_100000\_ext.csv}) if those were produced from a different network snapshot, centroid connector definition, or external-zone connector logic.
+
+\subsubsection{Saved approach: Option 4 (LDPTM)}
+For each trip with distance $D$ (miles):
+\begin{align}
+  n_{\text{charge}} &= \lceil D / 100 \rceil
+  \intertext{The model assumes one charging stop roughly every 100 miles, rounded up to an integer count.}
+  n_{\text{TAZ,trip}} &= \text{number of path TAZs for } (I,J)
+  \intertext{This is how many TAZ rows appear on the shortest-path skim between origin $I$ and destination $J$.}
+  q_{\text{cut}} &= 1 - \frac{n_{\text{charge}}}{n_{\text{TAZ,trip}}}
+  \intertext{The quantile cutoff selects the busiest path TAZs so that only $n_{\text{charge}}$ locations remain after filtering.}
+\end{align}
+Let $f_k$ = frequency of TAZ $k$ on network paths. Keep TAZs with $f_k > Q_{q_{\text{cut}}}(f \mid \text{trip})$ (per-trip quantile). Charging distance per retained TAZ:
+\begin{equation}
+  \text{chargeDist} = \frac{D}{n_{\text{TAZ,charge}}}
+\end{equation}
+\noindent Trip distance is split evenly across the TAZs that survive the frequency filter, giving miles attributed to each corridor charging event.
+\texttt{ChargeEventType} = \texttt{P} except at destination TAZ ($\texttt{TAZway}=J$), where \texttt{ChargeType} applies. Tag \texttt{other} $\in \{\texttt{corridor}, \texttt{destination}\}$.
+
+\subsubsection{ETM}
+Option~4 analogous (uses $\geq$ quantile for ETM). Saved output uses Option~4 for LD; ETM file may use Option~1 or~4 per script version---check saved RDS.
+
+\subsubsection{Outputs}
+\texttt{charge\_event\_new\_LDPTM\_sample42.rds}, \texttt{charge\_event\_new\_ETM\_sample42.rds}.
+
+%==============================================================================
+\section{Stage 04: Spatial downscaling to blocks and feeders}
+%==============================================================================
+
+\subsection{Stage 04\_01: Block shares within TAZ}
+\textbf{Script:} \texttt{04\_01\_get\_share\_block vs TAZ.R}
+
+\begin{align}
+  \text{population\_share}_c &= \frac{\text{pop}_c}{\sum_{c' \in \text{TAZ}} \text{pop}_{c'}}
+  \intertext{Each census block receives a fraction of TAZ population equal to its block population divided by the TAZ total.}
+  \text{jobs\_share}_c &= \frac{\text{jobs}_c}{\sum_{c' \in \text{TAZ}} \text{jobs}_{c'}}
+  \intertext{Workplace share uses LODES job counts the same way, to locate work and public charging events.}
+\end{align}
+Blocks without LODES jobs: $\text{jobs}_c=0$. Census block \texttt{GEOID10} = last 14 characters of full block GEOID.
+
+\textbf{Output:} \texttt{share\_block vs TAZ.csv}.
+
+%------------------------------------------------------------------------------
+\subsection{Stage 04\_02: TAZ events to blocks}
+\textbf{Script:} \texttt{04\_02\_split\_charging events\_TAZ to block\_yearly new.R}
+
+Split home (H) events by \texttt{population\_share}; work/public (W,P) by \texttt{jobs\_share}.
+
+For TAZ $z$, year $y$, total events $N_{z,y}$:
+\begin{align}
+  n^{\text{int}}_{c} &= \left\lfloor N_{z,y} \cdot \text{share}_c \right\rfloor
+  \intertext{Each block first receives the integer part of events proportional to population or jobs share.}
+  R_{z,y} &= N_{z,y} - \sum_c n^{\text{int}}_c
+  \intertext{The residual counts how many events were lost to flooring and must be reassigned randomly.}
+\end{align}
+Residual $R_{z,y}$ events assigned to $R_{z,y}$ randomly selected blocks with $\text{share}_c>0$ (seed~66 for allocation; seed~99 for event ordering).
+
+\textbf{Outputs:}
+\begin{lstlisting}
+charge_event_new_block_home_sample42_draw12_split6699.rds
+charge_event_new_block_workpublic_sample42_draw12_split6699.rds
+\end{lstlisting}
+
+%------------------------------------------------------------------------------
+\subsection{Stage 04\_03: Blocks to feeders}
+\textbf{Script:} \texttt{04\_03\_map\_block to feeder.R}
+
+Combine PGE, SCE, SDGE feeder shapefiles. Assign blocks via (i)~intersection with feeder lines (QGIS), (ii)~nearest feeder for remaining blocks. Export combo shapefile/CSV for IOU blocks.
+
+%==============================================================================
+\section{Stage 05: Empirical charging sessions}
+%==============================================================================
+
+\subsection{Script}
+\texttt{05\_02\_sample\_charging events\_distance bins\_IOU blocks.R}
+
+\subsection{Energy demand bins}
+\begin{equation}
+  \text{demand (\,kWh)} = \frac{\texttt{dist}}{3}
+\end{equation}
+\noindent Charging energy need is approximated as one third of trip or charge distance in miles, i.e.\ roughly 3 miles per kWh.
+Eight bins: $(0,5]$, $(5,10]$, \ldots, $(80,\infty)$ kWh (same bins on empirical \texttt{energy}).
+
+\subsection{Charger type assignment}
+\begin{itemize}[noitemsep]
+  \item Public: sample DC vs L2 by charger counts (8919 vs 29229); corridor LD trips forced to DC.
+  \item Home: sample single-family vs multi-family (weights 56.4 vs 38.9).
+\end{itemize}
+
+\subsection{Matching}
+For each (type, housing/level, bin) stratum, sample \texttt{eventID} from cleaned empirical pool \texttt{charging\_session\_all\_clean.rds} (seed~36), matching count to events in stratum.
+
+\subsection{Output}
+\texttt{session\_feeder\_new\_bins\_IOU\_sample42\_draw12\_split6699\_sample36.rds} with \texttt{FeederID}, \texttt{year}, \texttt{start\_hour}, \texttt{end\_hour}, \texttt{charge\_type}, \texttt{charger\_level}, \texttt{power}, \texttt{energy}, \texttt{housing}.
+
+%==============================================================================
+\section{Stage 06: Feeder charging profiles}
+%==============================================================================
+
+\subsection{Script}
+\texttt{06\_01\_sum\_charging profiles.R}
+
+For each event, expand to 24 hourly bins; assign load = \texttt{power} when hour $\in [\texttt{start\_hour}, \texttt{end\_hour}]$ (wrap past midnight if needed). Sum by (\texttt{FeederID}, \texttt{charge\_type}, \texttt{hour}, \texttt{year}).
+
+Cumulative profile through year $y$:
+\begin{equation}
+  L^{\text{cum}}_{f,h,y} = \sum_{y'=2022}^{y} L_{f,h,y'}
+\end{equation}
+\noindent Cumulative feeder load at hour $h$ in year $y$ is the sum of that hour's EV charging power over all adoption years up to and including $y$.
+
+\textbf{Output:} \texttt{profile\_feeder\_cum\_bins\_IOU\_sample42\_draw12\_split6699\_sample36.rds}.
+
+%==============================================================================
+\section{Related: multi-day SOC-aware simulation (\texttt{multiday\_charging/})}
+%==============================================================================
+
+A separate subproject (\texttt{multiday\_charging/}) simulates fleet charging over 365 days without running CSTDM stages~03--04. Vehicles accumulate driving energy until a preferred charging interval elapses or the battery would deplete; sessions are drawn from the same empirical pool as stage~05. Full documentation: \texttt{docs/multiday\_charging\_methodology.tex} (companion PDF).
+
+Key distinction: stages~03\_01/03\_02 decide \emph{how many} charging events and \emph{where} along trips; \texttt{multiday\_charging} decides \emph{when} drivers charge across days given pack size and driving, then samples empirical hourly shapes directly.
+
+%==============================================================================
+\section{Stage 07: Grid overload assessment}
+%==============================================================================
+
+\subsection{Script}
+\texttt{07\_05\_grid\_EV.R}
+
+\subsection{Grid quantities}
+Per feeder $f$, month $m$, hour $h$:
+\begin{align}
+  \text{capacity}_{f,m,h} &= \text{baseload}_{f,m,h} + \text{headroom}_{f,m,h}
+  \intertext{Feeder capacity is interpreted as existing baseload plus margin available for additional load.}
+  \text{overload}_{f,m,h,y} &= \text{EVload}_{f,h,y} - \text{headroom}_{f,m,h}
+  \intertext{Overload measures how much EV demand exceeds headroom; positive values indicate congestion risk for that hour.}
+\end{align}
+PGE/SCE/SDGE merged after utility-specific cleaning. EV load replicated across 12 months within each year.
+
+Positive \texttt{overload} indicates EV demand exceeds available headroom for that hour.
+
+\textbf{Output:} \texttt{overload\_sample42\_draw12\_split6699\_sample36.rds}.
+
+%==============================================================================
+\section{Master data dictionary (selected fields)}
+%==============================================================================
+
+\begin{longtable}{@{}p{0.22\linewidth}p{0.72\linewidth}@{}}
+\toprule
+\textbf{Field} & \textbf{Meaning} \\
+\midrule
+\endhead
+\texttt{SerialNo} / \texttt{hhID} & Synthetic household identifier in CSTDM \\
+\texttt{HomeZone} & Home TAZ \\
+\texttt{I}, \texttt{J} & Trip origin/destination TAZ \\
+\texttt{DPurp} & Detailed trip purpose code \\
+\texttt{ChargeType} & Aggregated charging location: H, W, P \\
+\texttt{Dist} & Trip distance (miles) \\
+\texttt{GEOIDbg} & Numeric 2010 block-group ID \\
+\texttt{GEOID10} & 14-digit census block ID \\
+\texttt{TAZ\_Zone} / \texttt{TAZ} & CSTDM traffic analysis zone \\
+\texttt{share} & BG population fraction of tract \\
+\texttt{EVhh\_share} & EV households / all households in TAZ \\
+\texttt{chargeDist} & Energy-relevant distance attributed to a charging event (mi) \\
+\texttt{FeederID} & Utility distribution feeder/circuit ID \\
+\texttt{headroom} & Capacity margin above baseload (kW) \\
+\texttt{overload} & EV load minus headroom (kW) \\
+\bottomrule
+\end{longtable}
+
+%==============================================================================
+\section{Reproducibility: random seeds}
+%==============================================================================
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Step} & \textbf{Seed} \\
+\midrule
+EV household sampling (\texttt{02\_03}) & 42 \\
+SD charging-location draw (\texttt{03\_01}) & 12 \\
+Block event count residual (\texttt{04\_02}) & 66 \\
+Block event ordering (\texttt{04\_02}) & 99 \\
+Empirical session matching (\texttt{05\_02}) & 36 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%==============================================================================
+\section{Software and dependencies}
+%==============================================================================
+
+R packages: \texttt{data.table}, \texttt{tidyverse}, \texttt{sf}. Python ports use \texttt{pandas}, \texttt{geopandas}, \texttt{numpy}. Large intermediate files stored as \texttt{.rds} (R) or \texttt{.pkl} (Python).
+
+%==============================================================================
+\section*{References}
+%==============================================================================
+
+\begin{itemize}[noitemsep]
+  \item California Statewide Travel Demand Model (CSTDM), Caltrans.
+  \item U.S. Census Bureau, 2010 Summary File 1; TIGER/Line shapefiles.
+  \item LEHD LODES (2019 workplace area characteristics).
+  \item EV Toolbox, UC Davis / Strategic Growth Council.
+  \item Li, Y., et al., \emph{Impact of Electric Vehicle Charging Demand on Power Distribution Grid Congestion}.
+\end{itemize}
+
+\end{document}

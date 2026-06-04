@@ -16,10 +16,10 @@ import pandas as pd
 from common import read_rds_like, save_rds_like
 
 EVENT_HOME = (
-    "data/mobility data/CSTDM processed/charge_event_new_block_home_sample42_draw12_split6699.pkl"
+    "data/mobility_data/CSTDM_processed/charge_event_new_block_home_sample42_draw12_split6699.pkl"
 )
 EVENT_WP = (
-    "data/mobility data/CSTDM processed/charge_event_new_block_workpublic_sample42_draw12_split6699.pkl"
+    "data/mobility_data/CSTDM_processed/charge_event_new_block_workpublic_sample42_draw12_split6699.pkl"
 )
 BLOCK_TO_FEEDER = "data/mapping/block to feeder 2010/shape mapped/block_2010_to_feeder_map_line_combo.csv"
 IOU_BLOCKS = "data/mapping/block to feeder 2010/shape block IOUs++/shape block IOUs++.csv"

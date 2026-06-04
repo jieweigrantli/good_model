@@ -1,0 +1,361 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\geometry{margin=1in}
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue, citecolor=blue}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  backgroundcolor=\color{gray!8},
+  columns=fullflexible
+}
+
+\title{Methodology: Multi-Day SOC-Aware EV Charging Simulation\\
+\small \texttt{Distribution-Grid-EV-CA/multiday\_charging/}}
+\author{Replication documentation}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document describes the \texttt{multiday\_charging} subproject: a stand-alone Python simulation that samples EV charging sessions over many days using battery state-of-charge (SOC) logic, configurable charging-frequency preferences, and an empirical session pool. It complements the main grid pipeline documented in \texttt{pipeline\_methodology.tex}, which builds charging \emph{events} from CSTDM trips (SDPTM, LDPTM, ETM) and only attaches empirical start times and power in stage~05.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%==============================================================================
+\section{Purpose and relation to the main pipeline}
+%==============================================================================
+
+The main pipeline (\texttt{01\_01}--\texttt{07\_05}) answers: \emph{where and how many} charging events occur on feeders over adoption years, then copies \emph{when and how fast} from real charger logs. The \texttt{multiday\_charging} subproject answers a different question: \emph{given a fleet with heterogeneous batteries and driving, when do vehicles choose to charge, and what hourly load shapes emerge over 365 days?}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Aspect} & \textbf{Main pipeline (03--05)} & \textbf{multiday\_charging} \\
+\midrule
+Trip source & CSTDM SD/LD/ETM tables & Synthetic daily VMT + optional SDPTM calibration \\
+Charge timing & Per trip / per corridor stop & SOC + preferred interval (1--7 days) \\
+Empirical data & Stage~05 only (\texttt{05\_02}) & Required pool at build time \\
+Spatial output & Block / feeder & Fleet-aggregate hourly (optional zone column) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%==============================================================================
+\section{Software layout}
+%==============================================================================
+
+\begin{lstlisting}
+multiday_charging/
+  config.py              # MultiDayConfig dataclass (all parameters)
+  fleet.py               # Battery mix, access flags, interval preference
+  trips.py               # Daily VMT + work/public availability
+  session_pool.py        # Load charging_session_all_clean.pkl
+  choice.py              # Location / DC-L2 / housing weights
+  sampling.py            # SOC-aware multi-day sampler
+  load_profile.py        # Hourly matrices and percentile bands
+  run_multiday_charging.ipynb
+  outputs/               # Plots and arrays (created at run time)
+\end{lstlisting}
+
+Parent helpers: \texttt{../common.py} (\texttt{read\_rds\_like}, \texttt{save\_rds\_like}). Input builder: \texttt{../build\_multiday\_inputs.py}.
+
+%==============================================================================
+\section{Required inputs}
+%==============================================================================
+
+\subsection{Empirical session pool (required)}
+\textbf{Path:} \texttt{data/charging data/charging\_session\_all\_clean.pkl}
+
+Built by \texttt{build\_multiday\_inputs.py}:
+\begin{itemize}[noitemsep]
+  \item \textbf{Home} --- PEV-Profiles L1/L2 (\texttt{PEV-Profiles-L1.xlsx}, \texttt{PEV-Profiles-L2.xlsx}): 10-minute power profiles converted to sessions.
+  \item \textbf{Work / public} --- \texttt{intermediate\_geolabeled\_with\_density\_category 2.csv}: non-residential sessions (property-type mapping follows \texttt{Reference\_Code/6\_charging\_behavior\_synthetic\_load.ipynb}).
+\end{itemize}
+
+\textbf{Columns used:} \texttt{charge\_type} (\texttt{home}, \texttt{work}, \texttt{public}), \texttt{charger\_level} (\texttt{L2}, \texttt{DC}), \texttt{housing} (home only), \texttt{energy} (kWh), \texttt{power} (kW), \texttt{start\_hour}, \texttt{end\_hour}. Bins 1--8 match stage~05: $(0,5],\ldots,(80,\infty]$ kWh.
+
+\subsection{Optional SDPTM calibration}
+\textbf{Path:} \texttt{data/mobility\_data/CSTDM\_processed/EV trips\_new\_SDPTM\_sample42.pkl}
+
+When \texttt{CALIBRATE\_FROM\_REAL\_TRIPS=True} in the notebook:
+\begin{itemize}[noitemsep]
+  \item Per-vehicle \texttt{mean\_daily\_vmt} $\leftarrow \sum \texttt{Dist}$ by \texttt{SerialNo}.
+  \item \texttt{work\_access} $\leftarrow$ configured share $\land$ vehicle ever has \texttt{ChargeType=W}.
+\end{itemize}
+Day-to-day VMT noise still uses \texttt{vmt\_day\_to\_day\_cv}; consider filtering trips to one \texttt{year} if multi-year inflation is unwanted.
+
+%==============================================================================
+\section{Configuration (\texttt{MultiDayConfig})}
+%==============================================================================
+
+All parameters are set in one notebook cell (defaults in \texttt{config.py}).
+
+\subsection{Fleet and energy}
+\begin{itemize}[noitemsep]
+  \item \texttt{battery\_mix} --- $\{$kWh: share$\}$ capacity distribution.
+  \item \texttt{efficiency\_mi\_per\_kwh} = 3.0 --- matches parent rule $\text{demand} = \texttt{dist}/3$.
+  \item \texttt{reserve\_soc} --- minimum pack fraction retained; usable energy $= \texttt{battery\_kwh}(1-\texttt{reserve\_soc})$.
+\end{itemize}
+
+\subsection{Charging-frequency matrix}
+\texttt{charge\_interval\_probs}: map $\{1,\ldots,7\} \to$ probability. Each vehicle draws \texttt{interval\_pref\_days}. Charging may occur earlier if the pack would deplete.
+
+\subsection{Charging-location matrix}
+\texttt{location\_weights} default aligns with \texttt{Reference\_Code} \texttt{RAW\_SHARES}:
+\begin{center}
+\begin{tabular}{lc}
+\toprule
+Label & Weight \\
+\midrule
+Home (\texttt{Residential\_L1\_L2}) & 0.68 \\
+Work (\texttt{Workplace\_L2}) & 0.04 \\
+Public (\texttt{Public\_L2} + \texttt{DCFC}) & 0.28 \\
+\bottomrule
+\end{tabular}
+\end{center}
+Feasibility: \texttt{home\_access\_share}, \texttt{work\_access\_share}, daily \texttt{work\_trip\_prob}, \texttt{public\_trip\_prob}. Infeasible locations get zero weight; remaining weights are renormalised (public is the backstop).
+
+\subsection{Sub-type weights (within location)}
+\begin{itemize}[noitemsep]
+  \item \texttt{public\_level\_weights} --- DC vs L2 when sampling public (default $0.20$ / $0.08$, normalised).
+  \item \texttt{home\_housing\_weights} --- single vs multi family (56.4 / 38.9, same as \texttt{05\_02}).
+\end{itemize}
+
+\subsection{Daily driving and variability parameters}
+\textbf{Mean VMT:} \texttt{mean\_daily\_vmt} (default 32--35~mi) is a planning prior, close to \texttt{AVG\_DAILY\_VMT\_PER\_EV = 35} in \texttt{Reference\_Code/6\_charging\_behavior\_synthetic\_load.ipynb}. With SDPTM calibration, each vehicle's personal mean is overwritten by $\sum \texttt{Dist}$ per \texttt{SerialNo} (optionally filter to one \texttt{year} to avoid multi-year inflation).
+
+\textbf{Coefficient of variation (CV):} \texttt{vmt\_between\_vehicle\_cv} and \texttt{vmt\_day\_to\_day\_cv} are \emph{not} probabilities in $[0,1]$. They are dimensionless spreads $\mathrm{CV}=\sigma/\mu$:
+\begin{itemize}[noitemsep]
+  \item \texttt{vmt\_between\_vehicle\_cv} (e.g.\ 0.45) --- spread of \texttt{mean\_daily\_vmt} across vehicles via a lognormal draw in \texttt{fleet.py}.
+  \item \texttt{vmt\_day\_to\_day\_cv} (e.g.\ 0.55) --- day-to-day multiplier $\varepsilon_{v,d}$ around each vehicle's mean in \texttt{trips.py}, with median$(\varepsilon)=1$.
+\end{itemize}
+Implementation: $\sigma=\sqrt{\log(1+\mathrm{CV}^2)}$ for the underlying lognormal so the target CV is preserved.
+
+\textbf{Other:} \texttt{no\_travel\_prob} (e.g.\ 0.08) is a true probability --- fraction of days with zero miles.
+
+\subsection{Parameter provenance (quick reference)}
+\begin{center}
+\small
+\begin{tabular}{ll}
+\toprule
+Parameter & Typical source \\
+\midrule
+\texttt{public\_level\_weights} 8919 / 29229 & \texttt{05\_02} public charger counts (DC vs L2) \\
+\texttt{home\_housing\_weights} 56.4 / 38.9 & \texttt{05\_02} housing-unit weights \\
+\texttt{location\_weights} 0.68 / 0.04 / 0.28 & \texttt{RAW\_SHARES} in reference notebook \\
+\texttt{home\_access\_share}, \texttt{work\_trip\_prob}, \ldots & Engineering defaults for feasibility \\
+\texttt{charge\_interval\_probs} & User-tunable; not from CSTDM \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%==============================================================================
+\section{Simulation algorithm}
+%==============================================================================
+
+\subsection{Step 1: Build fleet (\texttt{fleet.py})}
+Draw per vehicle: \texttt{battery\_kwh}, \texttt{interval\_pref\_days}, \texttt{home\_access}, \texttt{work\_access}, \texttt{mean\_daily\_vmt}.
+
+\subsection{Step 2: Daily inputs (\texttt{trips.py})}
+For each $(\text{vehicle}, \text{day})$:
+\begin{equation}
+  \texttt{vmt}_{v,d} = \texttt{mean\_daily\_vmt}_v \times \varepsilon_{v,d}, \quad \varepsilon \sim \text{Lognormal},\ \text{median}(\varepsilon)=1
+\end{equation}
+\noindent Zero out VMT with probability \texttt{no\_travel\_prob}. Set \texttt{work\_available} and \texttt{public\_available} from Bernoulli draws and access flags.
+
+\subsection{Step 3: Session pool (\texttt{session\_pool.py})}
+Load empirical pool; assign \texttt{bin} from \texttt{energy}; assign \texttt{eventID}.
+
+\subsection{Step 4: Multi-day sampling (\texttt{sampling.py})}
+For each day $d$ and vehicle $v$:
+\begin{enumerate}[noitemsep]
+  \item Energy consumed: $e_{v,d} = \texttt{vmt}_{v,d} / \texttt{efficiency\_mi\_per\_kwh}$.
+  \item Accumulate $E^{\text{cum}}_{v} \mathrel{+}= e_{v,d}$; increment \texttt{days\_since}.
+  \item \textbf{Charge if} $E^{\text{cum}}_{v} \ge \texttt{usable\_kwh}_v$ \textbf{or} \texttt{days\_since} $\ge$ \texttt{interval\_pref\_days}$_v$ (and VMT $>0$ that day).
+  \item Feasible locations: home if \texttt{home\_access}; work if \texttt{work\_available}; public if \texttt{public\_available}.
+  \item Draw location from renormalised \texttt{location\_weights}; draw housing or DC/L2 sub-type.
+  \item Compute recharge \textbf{demand} $= \min(E^{\text{cum}}_{v}, \texttt{usable\_kwh}_v)$; map demand to energy bin $b$ (same cutpoints as stage~05).
+  \item Sample one empirical row with matching (\texttt{charge\_type}, sub-type, $b$); copy \texttt{start\_hour}, \texttt{end\_hour}, \texttt{power}, and pool \texttt{energy} as \texttt{energy\_session}.
+  \item Reset $E^{\text{cum}}_{v}$ and \texttt{days\_since} (full recharge assumption).
+\end{enumerate}
+
+\subsubsection{Matching demand kWh to empirical session kWh}
+The simulation stores two energy fields per sampled session:
+\begin{itemize}[noitemsep]
+  \item \texttt{energy\_demand} --- kWh the vehicle needed since the last charge (from accumulated driving, capped by usable pack).
+  \item \texttt{energy\_session} --- kWh from the \emph{drawn} historical session in the pool.
+\end{itemize}
+They are \textbf{not forced to be equal}. Matching is \textbf{stratified by bin only}:
+\begin{enumerate}[noitemsep]
+  \item Driving sets \texttt{energy\_demand} (e.g.\ 9.3~kWh).
+  \item Demand maps to bin $b$ (e.g.\ bin~2: $(5,10]$~kWh).
+  \item A random pool row is drawn with the same \texttt{charge\_type}, housing or DC/L2 sub-type, and bin $b$ (e.g.\ 8.2~kWh).
+\end{enumerate}
+This mirrors stage~\texttt{05\_02}: synthetic events get $\texttt{demand}=\texttt{dist}/3$ and a bin; empirical \texttt{eventID} supplies timing and power without rescaling session energy to synthetic demand.
+
+\textbf{What drives hourly load plots:} \texttt{load\_profile.py} uses empirical \texttt{power} (kW) and \texttt{start\_hour}/\texttt{end\_hour} only --- not \texttt{energy\_demand}. Integrated energy over active hours tracks \texttt{energy\_session}, which is only loosely tied to demand through the shared bin. The design is bootstrap / stratified resampling: SOC logic sets \emph{when} and \emph{how large} (bin); the pool sets \emph{time-of-day shape} and charger power.
+
+\subsection{Step 5: Load profiles (\texttt{load\_profile.py})}
+Build $[n_{\text{days}}, 24]$ matrix: constant power over session hours (wrap at midnight). Outputs: daily curves, 5th--95th hourly percentiles, optional split by \texttt{charge\_type}.
+
+%==============================================================================
+\section{Outputs}
+%==============================================================================
+
+Default directory: \texttt{multiday\_charging/outputs/}
+\begin{itemize}[noitemsep]
+  \item \texttt{daily\_load\_365\_lines.png}
+  \item \texttt{hourly\_load\_percentile\_band.png}
+  \item \texttt{mean\_load\_by\_type.png}
+  \item \texttt{daily\_hourly\_load\_kW.npy}
+  \item \texttt{hourly\_percentile\_band.csv}
+  \item \texttt{sampled\_sessions.parquet} (if supported)
+\end{itemize}
+
+%==============================================================================
+\section{How the main pipeline samples SD, LD, and ETM charging}
+%==============================================================================
+
+\textit{This section documents stages~03 and~05 of the parent pipeline. \texttt{multiday\_charging} does not run these steps; it is included so both documents stay self-contained.}
+
+\subsection{Short distance (SDPTM) --- \texttt{03\_01}}
+\textbf{Input:} \texttt{EV trips\_new\_SDPTM\_sample42} with \texttt{ChargeType} $\in \{H,W,P\}$ from trip purpose.
+
+\textbf{Logic:}
+\begin{enumerate}[noitemsep]
+  \item Group trips into tours (\texttt{SerialNo}, \texttt{Person}, \texttt{Tour}).
+  \item For each tour, list which of $\{H,W,P\}$ appear among trips.
+  \item Form seven valid location \emph{patterns} (e.g.\ home-only, home+work, all three) with EVMT survey shares (53\% home-only, 8\% work-only, \ldots).
+  \item Normalise shares to the tour; draw one pattern (seed~12).
+  \item A trip creates a charging event if its \texttt{ChargeType} matches an active location in the drawn pattern.
+  \item Sum \texttt{Dist} over trips assigned to each event $\rightarrow$ \texttt{chargeDist}; attach TAZ \texttt{J}, \texttt{Time}, \texttt{year}.
+\end{enumerate}
+
+\textbf{Output:} \texttt{charge\_event\_new\_SDPTM\_sample42\_draw12}. No empirical session times yet --- only \emph{that} charging happens, \emph{where} (H/W/P), and \emph{how far} (miles).
+
+\subsection{Long distance (LDPTM) and external (ETM) --- \texttt{03\_02}}
+\textbf{Reference:} \texttt{R\_Yanning/03\_02\_charging events\_LD\_ETM.R}. Options~1--3 are explored in R but \textbf{not saved}; both the R workflow and the Python port persist \textbf{Option~4 only} to \texttt{charge\_event\_new\_LDPTM\_sample42} and \texttt{charge\_event\_new\_ETM\_sample42}.
+
+\textbf{Inputs:}
+\begin{itemize}[noitemsep]
+  \item EV trips (\texttt{EV trips\_new\_LDPTM\_sample42} or \texttt{EV trips\_new\_EXT\_sample42}).
+  \item Parsed skim: \texttt{parsed\_100000\_LDPTM} or \texttt{parsed\_100000\_ETM} --- one row per TAZ on the shortest-path sequence for each $(I,J)$.
+\end{itemize}
+
+\subsubsection{What \texttt{TAZfreq} means}
+On the \emph{full} skim table (all modeled long-distance paths, before joining EV trips), Yanning defines:
+\begin{lstlisting}
+dist.ld[, TAZfreq := .N, by = TAZway]   # R data.table
+\end{lstlisting}
+\textbf{\texttt{TAZfreq} for TAZ $k$} = number of skim \textbf{rows} where \texttt{TAZway = $k$}. Because each origin--destination pair has many rows (one per TAZ along the path), a high \texttt{TAZfreq} means that TAZ appears on many $I \to J$ routes in the LD (or ETM) network --- a proxy for a \textbf{major corridor / hub}, not census population, charger inventory, or EV trip counts.
+
+\textbf{What it is not:} EV trip frequency, distance since last charge, or geographic area.
+
+\subsubsection{Option 4: which TAZ gets a charging event}
+Option~4 does \textbf{not} place a charger every 100~miles along the odometer. It selects TAZs \textbf{on the trip's path} that are also \textbf{high-\texttt{TAZfreq}} relative to other TAZs on that same path, targeting about $\lceil D/100 \rceil$ stops.
+
+\paragraph{Step-by-step (per trip).}
+\begin{enumerate}
+  \item \textbf{Target stop count:} $n_{\text{charge}} = \lceil D/100 \rceil$ (e.g.\ 220~mi $\Rightarrow$ 3 stops).
+  \item \textbf{Path length:} $n_{\text{TAZ,trip}}$ = number of skim rows for this \texttt{TripID} on $(I,J)$.
+  \item \textbf{Quantile probability:}
+  \begin{equation}
+    q_{\text{cut}} = 1 - \frac{n_{\text{charge}}}{n_{\text{TAZ,trip}}}
+  \end{equation}
+  \noindent Many path TAZs but few required stops $\Rightarrow$ high $q_{\text{cut}}$ $\Rightarrow$ stricter filter.
+  \item \textbf{Cutoff on this path only:} Let $F = \{\texttt{TAZfreq of TAZs on this trip's path}\}$. Then
+  \begin{equation}
+    \texttt{freqCUT} = Q_{q_{\text{cut}}}(F)
+  \end{equation}
+  \noindent (R: \texttt{quantile(TAZfreq, probs=qtCUT, by=TripID)}; Python: \texttt{np.quantile} per trip.)
+  \item \textbf{Keep TAZs:}
+  \begin{itemize}[noitemsep]
+    \item LDPTM: \texttt{TAZfreq > freqCUT}
+    \item ETM: \texttt{TAZfreq >= freqCUT} (R line~160; slightly looser than LD)
+  \end{itemize}
+  \item \textbf{Attributed miles per stop:} $\texttt{chargeDist} = D / n_{\text{TAZ,charge}}$ where $n_{\text{TAZ,charge}}$ is the count of kept TAZs. Distance is split \textbf{evenly} across selected stops, not by actual spacing along the path.
+\end{enumerate}
+
+\paragraph{LD labeling after TAZ selection.}
+\begin{itemize}[noitemsep]
+  \item Corridor TAZs (\texttt{TAZway}$\neq J$): \texttt{ChargeEventType = P} (public), \texttt{other = corridor}.
+  \item Destination (\texttt{TAZway = J}): \texttt{ChargeEventType} = trip \texttt{ChargeType} (H/W/P), \texttt{other = destination}.
+\end{itemize}
+
+\paragraph{ETM.} Same Option~4 on \texttt{parsed\_100000\_ETM}; trips are inbound to California; output keeps \texttt{ChargeType} (typically public). No \texttt{ChargeEventType}/\texttt{other} corridor split in the saved ETM file.
+
+\paragraph{Numeric example.}
+Trip 220~mi, 40 TAZ rows on path: $n_{\text{charge}}=3$, $q_{\text{cut}}=1-3/40=0.925$. If \texttt{TAZfreq} on those 40 TAZs ranges 50--5000, \texttt{freqCUT} might be $\approx 4200$. Kept TAZs have \texttt{TAZfreq}$>4200$ --- often $\sim$3 busy highway TAZs, not necessarily spaced every 73~mi. Each gets $\texttt{chargeDist}\approx 220/3 \approx 73$~mi.
+
+\paragraph{What Option 4 is not.}
+\begin{itemize}[noitemsep]
+  \item Not all TAZs on the path (Option~1).
+  \item Not a fixed global top-10\% of TAZs (Option~3 uses 90\% quantile fixed).
+  \item Not geometric ``every 100 miles'' along the route polyline.
+\end{itemize}
+
+\subsubsection{Consistency with Yanning's R script}
+The Python port \texttt{03\_02\_charging\_events\_LD\_ETM.py} matches the \textbf{saved} R Option~4 logic:
+\begin{center}
+\small
+\begin{tabular}{ll}
+\toprule
+Step & R (\texttt{03\_02\_charging events\_LD\_ETM.R}) \\
+\midrule
+\texttt{TAZfreq} & \texttt{.N, by=TAZway} on full \texttt{dist.ld} / \texttt{dist.etm} \\
+$n_{\text{charge}}$ & \texttt{ceiling(Dist/100)} \\
+$q_{\text{cut}}$ & \texttt{1 - nCharge/nTAZtrip} \\
+\texttt{freqCUT} & \texttt{quantile(TAZfreq, probs=qtCUT, by=TripID)} \\
+LD filter & \texttt{TAZfreq > freqCUT} (line~88) \\
+ETM filter & \texttt{TAZfreq >= freqCUT} (line~160) \\
+\texttt{chargeDist} & \texttt{Dist/nTAZcharge} \\
+\bottomrule
+\end{tabular}
+\end{center}
+Minor implementation notes: R \texttt{quantile} vs NumPy may differ slightly at bin edges; ETM trip--path join in R is trip-driven (\texttt{allow.cartesian=TRUE}) whereas Python uses a left merge on \texttt{dist} --- results align when every ETM trip has a skim match.
+
+\subsection{Where empirical sessions attach --- \texttt{05\_02}}
+Stages~03--04 produce \textbf{synthetic events}: which TAZ or block, how many events, \texttt{chargeDist} or \texttt{dist} (miles). Energy need for binning:
+\begin{equation}
+  \texttt{demand\,(kWh)} = \frac{\texttt{dist}}{3}
+\end{equation}
+\noindent Eight bins $(0,5],\ldots,(80,\infty]$ on both synthetic demand and pool \texttt{energy}.
+
+Stage~\texttt{05\_02} then:
+\begin{enumerate}[noitemsep]
+  \item Assigns public DC vs L2 (charger counts 8919 / 29229) and home housing (56.4 / 38.9); LD corridor trips often forced to DC.
+  \item For each stratum (type, housing or level, bin), draws \texttt{eventID} from \texttt{charging\_session\_all\_clean} (seed~36).
+  \item Copies \texttt{start\_hour}, \texttt{end\_hour}, \texttt{power}, \texttt{energy} --- same stratified bootstrap principle as \texttt{multiday\_charging}, but spatially at feeder/block level after stage~04.
+\end{enumerate}
+Stage~06 expands each event to hourly feeder load using constant \texttt{power} over $[\texttt{start\_hour},\texttt{end\_hour}]$.
+
+%==============================================================================
+\section{Run commands}
+%==============================================================================
+
+\begin{lstlisting}
+# Build inputs (once)
+python build_multiday_inputs.py
+
+# Interactive run
+jupyter notebook multiday_charging/run_multiday_charging.ipynb
+\end{lstlisting}
+
+\end{document}

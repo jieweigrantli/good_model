@@ -15,15 +15,14 @@ import pandas as pd
 
 from common import fread_all_in_dir, read_rds_like, save_rds_like
 
-WORK_ROOT_R = r"C:/Users/nina3/Box Sync/Distribution Grid/Distribution Grid EV CA"
-SDPTM_DIR = r"C:/Nina/Research (large files)/CSTDM/SDPTM"
-LDPTM_TRIPS = r"C:/Nina/Research (large files)/CSTDM/LDPTM/LDPTM_Trips.csv"
-LDPTM_ACCEGR = r"C:/Nina/Research (large files)/CSTDM/LDPTM/LDPTM_AccEgr.csv"
-ETM_TRIPS = r"C:/Nina/Research (large files)/CSTDM/ETM/trips_Ext.csv"
-PARSED_LDPTM_DIR = "data/mobility data/TAZ distance/parsed_100000_LDPTM"
-PARSED_ETM_DIR = "data/mobility data/TAZ distance/parsed_100000_ETM"
+SDPTM_DIR = "data/mobility_data/CSTDM/SDPTM"
+LDPTM_TRIPS = "data/mobility_data/CSTDM/LDPTM/LDPTM_Trips.csv"
+LDPTM_ACCEGR = "data/mobility_data/CSTDM/LDPTM/LDPTM_AccEgr.csv"
+ETM_TRIPS = "data/mobility_data/CSTDM/ETM/trips_Ext.csv"
+PARSED_LDPTM_DIR = "data/mobility_data/TAZ_distance/parsed_100000_LDPTM"
+PARSED_ETM_DIR = "data/mobility_data/TAZ_distance/parsed_100000_ETM"
 
-OUT_DIR = "data/mobility data/CSTDM processed"
+OUT_DIR = "data/mobility_data/CSTDM_processed"
 
 
 # charging-purpose aggregation tables (from the R script)

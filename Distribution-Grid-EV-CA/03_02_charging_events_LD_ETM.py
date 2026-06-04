@@ -16,12 +16,12 @@ import pandas as pd
 
 from common import fread_all_in_dir, read_rds_like, save_rds_like
 
-PARSED_LDPTM_DIR = "data/mobility data/TAZ distance/parsed_100000_LDPTM"
-PARSED_ETM_DIR = "data/mobility data/TAZ distance/parsed_100000_ETM"
+PARSED_LDPTM_DIR = "data/mobility_data/TAZ_distance/parsed_100000_LDPTM"
+PARSED_ETM_DIR = "data/mobility_data/TAZ_distance/parsed_100000_ETM"
 
-EV_TRIPS_LD = "data/mobility data/CSTDM processed/EV trips_new_LDPTM_sample42.pkl"
-EV_TRIPS_ETM = "data/mobility data/CSTDM processed/EV trips_new_EXT_sample42.pkl"
-OUT_DIR = "data/mobility data/CSTDM processed"
+EV_TRIPS_LD = "data/mobility_data/CSTDM_processed/EV trips_new_LDPTM_sample42.pkl"
+EV_TRIPS_ETM = "data/mobility_data/CSTDM_processed/EV trips_new_EXT_sample42.pkl"
+OUT_DIR = "data/mobility_data/CSTDM_processed"
 
 
 def _prep_distance_table(directory: str) -> pd.DataFrame:
