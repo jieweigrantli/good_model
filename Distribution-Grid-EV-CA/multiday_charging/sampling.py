@@ -177,6 +177,63 @@ def _accumulate_day_load(
                     )
 
 
+def _init_taz_tracker(
+    fleet: pd.DataFrame,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    """Return per-TAZ accumulators and vehicle→TAZ index when ``home_taz`` exists."""
+    if "home_taz" not in fleet.columns:
+        return None
+
+    taz_vals, vehicle_taz = np.unique(
+        fleet["home_taz"].to_numpy(), return_inverse=True
+    )
+    n_taz = len(taz_vals)
+    taz_demand = np.zeros((n_taz, 3), dtype=np.float64)  # home, work, public
+    weights = np.bincount(vehicle_taz, minlength=n_taz).astype(np.float64)
+    weights /= weights.sum()
+    return taz_vals, vehicle_taz.astype(np.int32), taz_demand, weights
+
+
+def _accumulate_taz_demand(
+    taz_demand: np.ndarray,
+    vehicle_taz: np.ndarray,
+    taz_weights: np.ndarray,
+    idx: np.ndarray,
+    location: np.ndarray,
+    demand: np.ndarray,
+    rng: np.random.Generator,
+) -> None:
+    """Add session recharge energy (kWh) to TAZ buckets."""
+    is_home = location == "home"
+    is_work = location == "work"
+    is_pub = location == "public"
+
+    if is_home.any():
+        np.add.at(taz_demand[:, 0], vehicle_taz[idx[is_home]], demand[is_home])
+    if is_work.any():
+        dest = rng.choice(len(taz_weights), size=int(is_work.sum()), p=taz_weights)
+        np.add.at(taz_demand[:, 1], dest, demand[is_work])
+    if is_pub.any():
+        dest = rng.choice(len(taz_weights), size=int(is_pub.sum()), p=taz_weights)
+        np.add.at(taz_demand[:, 2], dest, demand[is_pub])
+
+
+def _taz_demand_frame(
+    taz_vals: np.ndarray, taz_demand: np.ndarray
+) -> pd.DataFrame:
+    total = taz_demand.sum(axis=1)
+    out = pd.DataFrame(
+        {
+            "TAZ": taz_vals,
+            "home_kwh": taz_demand[:, 0],
+            "work_kwh": taz_demand[:, 1],
+            "public_kwh": taz_demand[:, 2],
+            "total_kwh": total,
+        }
+    )
+    return out.sort_values("total_kwh", ascending=False).reset_index(drop=True)
+
+
 @dataclass
 class SimulateResult:
     """Outputs from ``simulate``; ``sessions`` is None when ``store_sessions=False``."""
@@ -185,6 +242,7 @@ class SimulateResult:
     load: np.ndarray
     load_by_type: dict[str, np.ndarray]
     summary: pd.DataFrame
+    taz_demand_kwh: pd.DataFrame | None = None
 
 
 def _estimate_session_count(cfg: MultiDayConfig, fleet: pd.DataFrame) -> int:
@@ -258,6 +316,12 @@ def simulate(
     ctype_counts = {ct: 0 for ct in LOCATIONS}
     sum_esess = 0.0
 
+    taz_tracker = _init_taz_tracker(fleet)
+    if taz_tracker is not None:
+        taz_vals, vehicle_taz, taz_demand, taz_weights = taz_tracker
+    else:
+        taz_vals = taz_demand = taz_weights = vehicle_taz = None
+
     for d in range(n_days):
         e_d = vmt[:, d] / eff
         cum_e += e_d
@@ -307,6 +371,11 @@ def simulate(
         loc_code[is_pub] = 2
         _accumulate_day_load(load, d, start, end, power, loc_code, load_by_type)
 
+        if taz_demand is not None:
+            _accumulate_taz_demand(
+                taz_demand, vehicle_taz, taz_weights, idx, location, demand, rng
+            )
+
         n_sessions += idx.size
         for ct in LOCATIONS:
             ctype_counts[ct] += int((location == ct).sum())
@@ -328,10 +397,19 @@ def simulate(
         days_since[idx] = 0
 
     summary = _build_summary(cfg, n_sessions, ctype_counts, sum_esess)
+    taz_df = (
+        _taz_demand_frame(taz_vals, taz_demand)
+        if taz_demand is not None
+        else None
+    )
 
     if not store_sessions:
         return SimulateResult(
-            sessions=None, load=load, load_by_type=load_by_type, summary=summary
+            sessions=None,
+            load=load,
+            load_by_type=load_by_type,
+            summary=summary,
+            taz_demand_kwh=taz_df,
         )
 
     if not out_vehicle:
@@ -362,7 +440,13 @@ def simulate(
         empty_housing = sessions["housing"] == ""
         sessions.loc[empty_housing, "housing"] = pd.NA
 
-    return sessions
+    return SimulateResult(
+        sessions=sessions,
+        load=load,
+        load_by_type=load_by_type,
+        summary=summary,
+        taz_demand_kwh=taz_df,
+    )
 
 
 def _build_summary(

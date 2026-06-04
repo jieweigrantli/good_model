@@ -261,3 +261,31 @@ def build_daily_inputs(
         "work_available": work_available,
         "public_available": public_available,
     }
+
+
+def assign_home_taz(
+    cfg: MultiDayConfig,
+    fleet: pd.DataFrame,
+    rng: np.random.Generator,
+) -> pd.DataFrame:
+    """Assign each vehicle a home TAZ from the sampled SDPTM EV-household table.
+
+    Uses ``EVhh_new_SDPTM_sample42.csv`` (``HomeZone`` per ``hhID``). Vehicles are
+    drawn with replacement proportional to the number of EV households per TAZ.
+    """
+    evhh_path = (
+        cfg.base_dir / "data/mobility_data/CSTDM_processed/EVhh_new_SDPTM_sample42.csv"
+    )
+    if not evhh_path.is_file():
+        raise FileNotFoundError(
+            f"Missing {evhh_path}. Run 02_03_sample_EV_hh.py first."
+        )
+
+    evhh = pd.read_csv(evhh_path, usecols=["HomeZone", "hhID"]).drop_duplicates("hhID")
+    counts = evhh["HomeZone"].value_counts(sort=False)
+    taz = counts.index.to_numpy()
+    p = (counts / counts.sum()).to_numpy(dtype=float)
+    fleet = fleet.copy()
+    fleet["home_taz"] = rng.choice(taz, size=len(fleet), p=p)
+    return fleet
+

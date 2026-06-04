@@ -15,19 +15,24 @@
 \contentsline {subsection}{\numberline {5.2}Step 2: Daily inputs (\texttt {trips.py})}{5}{subsection.5.2}%
 \contentsline {subsection}{\numberline {5.3}Step 3: Session pool (\texttt {session\_pool.py})}{5}{subsection.5.3}%
 \contentsline {subsection}{\numberline {5.4}Step 4: Multi-day sampling (\texttt {sampling.py})}{5}{subsection.5.4}%
-\contentsline {subsubsection}{\numberline {5.4.1}Matching demand kWh to empirical session kWh}{5}{subsubsection.5.4.1}%
+\contentsline {subsubsection}{\numberline {5.4.1}TAZ-level recharge energy (\texttt {result.taz\_demand\_kwh})}{5}{subsubsection.5.4.1}%
+\contentsline {subsubsection}{\numberline {5.4.2}Matching demand kWh to empirical session kWh}{6}{subsubsection.5.4.2}%
 \contentsline {subsection}{\numberline {5.5}Step 5: Load profiles (\texttt {load\_profile.py})}{6}{subsection.5.5}%
-\contentsline {section}{\numberline {6}Outputs}{6}{section.6}%
-\contentsline {section}{\numberline {7}How the main pipeline samples SD, LD, and ETM charging}{6}{section.7}%
-\contentsline {subsection}{\numberline {7.1}Short distance (SDPTM) --- \texttt {03\_01}}{6}{subsection.7.1}%
-\contentsline {subsection}{\numberline {7.2}Long distance (LDPTM) and external (ETM) --- \texttt {03\_02}}{7}{subsection.7.2}%
-\contentsline {subsubsection}{\numberline {7.2.1}What \texttt {TAZfreq} means}{7}{subsubsection.7.2.1}%
-\contentsline {subsubsection}{\numberline {7.2.2}Option 4: which TAZ gets a charging event}{7}{subsubsection.7.2.2}%
-\contentsline {paragraph}{Step-by-step (per trip).}{7}{section*.2}%
-\contentsline {paragraph}{LD labeling after TAZ selection.}{8}{section*.3}%
-\contentsline {paragraph}{ETM.}{8}{section*.4}%
-\contentsline {paragraph}{Numeric example.}{8}{section*.5}%
-\contentsline {paragraph}{What Option 4 is not.}{8}{section*.6}%
-\contentsline {subsubsection}{\numberline {7.2.3}Consistency with Yanning's R script}{8}{subsubsection.7.2.3}%
-\contentsline {subsection}{\numberline {7.3}Where empirical sessions attach --- \texttt {05\_02}}{8}{subsection.7.3}%
-\contentsline {section}{\numberline {8}Run commands}{9}{section.8}%
+\contentsline {section}{\numberline {6}Outputs and example figures}{6}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Files written by the notebook}{6}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}Example run (default notebook configuration)}{7}{subsection.6.2}%
+\contentsline {subsection}{\numberline {6.3}TAZ-level recharge energy maps}{7}{subsection.6.3}%
+\contentsline {subsection}{\numberline {6.4}Daily curve variability vs.\ \texttt {Reference\_Code/6}}{7}{subsection.6.4}%
+\contentsline {section}{\numberline {7}How the main pipeline samples SD, LD, and ETM charging}{7}{section.7}%
+\contentsline {subsection}{\numberline {7.1}Short distance (SDPTM) --- \texttt {03\_01}}{10}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}Long distance (LDPTM) and external (ETM) --- \texttt {03\_02}}{10}{subsection.7.2}%
+\contentsline {subsubsection}{\numberline {7.2.1}What \texttt {TAZfreq} means}{10}{subsubsection.7.2.1}%
+\contentsline {subsubsection}{\numberline {7.2.2}Option 4: which TAZ gets a charging event}{10}{subsubsection.7.2.2}%
+\contentsline {paragraph}{Step-by-step (per trip).}{10}{section*.2}%
+\contentsline {paragraph}{LD labeling after TAZ selection.}{11}{section*.3}%
+\contentsline {paragraph}{ETM.}{11}{section*.4}%
+\contentsline {paragraph}{Numeric example.}{11}{section*.5}%
+\contentsline {paragraph}{What Option 4 is not.}{11}{section*.6}%
+\contentsline {subsubsection}{\numberline {7.2.3}Consistency with Yanning's R script}{11}{subsubsection.7.2.3}%
+\contentsline {subsection}{\numberline {7.3}Where empirical sessions attach --- \texttt {05\_02}}{12}{subsection.7.3}%
+\contentsline {section}{\numberline {8}Run commands}{12}{section.8}%

@@ -11,6 +11,7 @@
 \usepackage{enumitem}
 \usepackage{listings}
 \usepackage{xcolor}
+\usepackage{graphicx}
 
 \geometry{margin=1in}
 \hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue, citecolor=blue}
@@ -99,7 +100,7 @@ When \texttt{CALIBRATE\_FROM\_REAL\_TRIPS=True} in the notebook:
   \item Per-vehicle \texttt{mean\_daily\_vmt} $\leftarrow \sum \texttt{Dist}$ by \texttt{SerialNo}.
   \item \texttt{work\_access} $\leftarrow$ configured share $\land$ vehicle ever has \texttt{ChargeType=W}.
 \end{itemize}
-Day-to-day VMT noise still uses \texttt{vmt\_day\_to\_day\_cv}; consider filtering trips to one \texttt{year} if multi-year inflation is unwanted.
+Calibration uses a lightweight profiles file (\texttt{EV trips\_new\_SDPTM\_sample42\_profiles.pkl}) built by streaming SDPTM CSVs when the full trip pickle is too large for memory. Day-to-day VMT noise still uses \texttt{vmt\_day\_to\_day\_cv}; consider filtering trips to one \texttt{year} if multi-year inflation is unwanted.
 
 %==============================================================================
 \section{Configuration (\texttt{MultiDayConfig})}
@@ -171,7 +172,7 @@ Parameter & Typical source \\
 %==============================================================================
 
 \subsection{Step 1: Build fleet (\texttt{fleet.py})}
-Draw per vehicle: \texttt{battery\_kwh}, \texttt{interval\_pref\_days}, \texttt{home\_access}, \texttt{work\_access}, \texttt{mean\_daily\_vmt}.
+Draw per vehicle: \texttt{battery\_kwh}, \texttt{interval\_pref\_days}, \texttt{home\_access}, \texttt{work\_access}, \texttt{mean\_daily\_vmt}. The notebook then calls \texttt{trips.assign\_home\_taz}: each vehicle draws a home TAZ (\texttt{HomeZone}) from \texttt{EVhh\_new\_SDPTM\_sample42.csv} with probability proportional to the EV-household count per TAZ.
 
 \subsection{Step 2: Daily inputs (\texttt{trips.py})}
 For each $(\text{vehicle}, \text{day})$:
@@ -196,6 +197,15 @@ For each day $d$ and vehicle $v$:
   \item Reset $E^{\text{cum}}_{v}$ and \texttt{days\_since} (full recharge assumption).
 \end{enumerate}
 
+\subsubsection{TAZ-level recharge energy (\texttt{result.taz\_demand\_kwh})}
+When the fleet has \texttt{home\_taz}, the sampler accumulates annual recharge energy (kWh) by TAZ and location type:
+\begin{itemize}[noitemsep]
+  \item \textbf{Home} --- credited to the vehicle's assigned \texttt{home\_taz}.
+  \item \textbf{Work / public} --- credited to a TAZ drawn at random with weights equal to the fleet's home-TAZ distribution (a destination proxy when trip-level destination TAZ is not carried through the multi-day loop).
+\end{itemize}
+The notebook exports \texttt{taz\_total\_demand\_kwh.csv} (columns \texttt{TAZ}, \texttt{home\_kwh}, \texttt{work\_kwh}, \texttt{public\_kwh}, \texttt{total\_kwh}) and joins these totals to CSTDM polygons \texttt{data/shps/taz\_id.shp} (field \texttt{TAZ12}) for choropleth maps.
+\label{sec:simulation-taz}
+
 \subsubsection{Matching demand kWh to empirical session kWh}
 The simulation stores two energy fields per sampled session:
 \begin{itemize}[noitemsep]
@@ -216,18 +226,72 @@ This mirrors stage~\texttt{05\_02}: synthetic events get $\texttt{demand}=\textt
 Build $[n_{\text{days}}, 24]$ matrix: constant power over session hours (wrap at midnight). Outputs: daily curves, 5th--95th hourly percentiles, optional split by \texttt{charge\_type}.
 
 %==============================================================================
-\section{Outputs}
+\section{Outputs and example figures}
 %==============================================================================
 
-Default directory: \texttt{multiday\_charging/outputs/}
+Default run directory: \texttt{multiday\_charging/outputs/}. The figures in Section~\ref{sec:example-figures} are taken directly from that folder after running \texttt{run\_multiday\_charging.ipynb}.
+
+\subsection{Files written by the notebook}
 \begin{itemize}[noitemsep]
   \item \texttt{daily\_load\_365\_lines.png}
   \item \texttt{hourly\_load\_percentile\_band.png}
   \item \texttt{mean\_load\_by\_type.png}
   \item \texttt{daily\_hourly\_load\_kW.npy}
   \item \texttt{hourly\_percentile\_band.csv}
-  \item \texttt{sampled\_sessions.parquet} (if supported)
+  \item \texttt{taz\_total\_demand\_kwh.csv}
+  \item \texttt{taz\_total\_demand\_map.png}
+  \item \texttt{taz\_demand\_by\_type\_maps.png} (home / work / public panel)
+  \item \texttt{taz\_home\_demand\_map.png}, \texttt{taz\_work\_demand\_map.png}, \texttt{taz\_public\_demand\_map.png}
+  \item \texttt{sampled\_sessions.parquet} (when \texttt{store\_sessions=True})
 \end{itemize}
+
+For full California fleet scale (\texttt{n\_vehicles}$\approx 2.5\times 10^6$), set \texttt{store\_sessions=False} so the sampler builds hourly load matrices only (no multi-gigabyte session table).
+
+\subsection{Example run (default notebook configuration)}
+\label{sec:example-figures}
+The figures below use \texttt{seed=42}, \texttt{n\_vehicles=2{,}500{,}000}, \texttt{n\_days=365}, SDPTM profile calibration, and the empirical session pool. Hourly load is total fleet kW summed over active session hours (constant \texttt{power} per session, same convention as stage~06).
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{../multiday_charging/outputs/daily_load_365_lines.png}
+  \caption{All 365 daily fleet charging load curves (light blue) and the mean curve across days (black). At large fleet size, curves often appear nearly parallel because the law of large numbers stabilises the hour-of-day \emph{shape}; day-to-day differences are mostly small changes in total scale.}
+  \label{fig:daily-load-lines}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{../multiday_charging/outputs/hourly_load_percentile_band.png}
+  \caption{Hourly load variability across the 365 simulated days: 5th--95th percentile band (shaded), median (navy), and mean (dashed orange). This view highlights residual day-to-day spread that is hard to see when overlaying all daily curves.}
+  \label{fig:percentile-band}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{../multiday_charging/outputs/mean_load_by_type.png}
+  \caption{Mean daily charging load decomposed by location type (home, work, public), stacked by hour. Home dominates under default \texttt{RAW\_SHARES} location weights (68\% / 4\% / 28\%).}
+  \label{fig:load-by-type}
+\end{figure}
+
+\subsection{TAZ-level recharge energy maps}
+\label{sec:taz-maps}
+Annual recharge energy (GWh) by CSTDM TAZ, from \texttt{result.taz\_demand\_kwh}. Grey polygons have zero simulated demand for that layer. Color scales are logarithmic (5th--99th percentile of positive TAZs per layer). Home energy concentrates in residential TAZs where EV households are sampled; work and public layers use the fleet home-TAZ weight proxy described in Section~\ref{sec:simulation-taz}.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{../multiday_charging/outputs/taz_total_demand_map.png}
+  \caption{Total annual recharge energy by TAZ (home + work + public).}
+  \label{fig:taz-total-map}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{../multiday_charging/outputs/taz_demand_by_type_maps.png}
+  \caption{Annual recharge energy by TAZ and location type: home (left), work (center), public (right).}
+  \label{fig:taz-by-type-maps}
+\end{figure}
+
+\subsection{Daily curve variability vs.\ \texttt{Reference\_Code/6}}
+The reference synthetic-load notebook (\texttt{6\_charging\_behavior\_synthetic\_load.ipynb}) intentionally widens day-to-day \emph{shape} variance: residential days resample whole fleet-day shapes from PEV profiles; public/work pools use a large \texttt{SUPER\_SESSION\_FACTOR} so each day draws a small random set of session tuples. \texttt{multiday\_charging} instead draws one empirical session per charging \emph{event}; at millions of vehicles, independent draws average to a stable aggregate profile (Figure~\ref{fig:daily-load-lines}). To increase visible spread: spread \texttt{charge\_interval\_probs} across 2--7~days, raise \texttt{vmt\_day\_to\_day\_cv} or \texttt{no\_travel\_prob}, or plot normalised daily shapes / percentile bands rather than raw kW overlays.
 
 %==============================================================================
 \section{How the main pipeline samples SD, LD, and ETM charging}
@@ -353,9 +417,14 @@ Stage~06 expands each event to hourly feeder load using constant \texttt{power} 
 \begin{lstlisting}
 # Build inputs (once)
 python build_multiday_inputs.py
+python build_multiday_inputs.py --profiles-only   # SDPTM profiles only
 
-# Interactive run
+# Interactive run (writes figures to multiday_charging/outputs/)
 jupyter notebook multiday_charging/run_multiday_charging.ipynb
+
+# Compile this report (from Distribution-Grid-EV-CA/docs/)
+pdflatex multiday_charging_methodology.tex
+pdflatex multiday_charging_methodology.tex
 \end{lstlisting}
 
 \end{document}

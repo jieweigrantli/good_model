@@ -19,20 +19,38 @@
 \@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Step 2: Daily inputs (\texttt  {trips.py})}{5}{subsection.5.2}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Step 3: Session pool (\texttt  {session\_pool.py})}{5}{subsection.5.3}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Step 4: Multi-day sampling (\texttt  {sampling.py})}{5}{subsection.5.4}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.4.1}Matching demand kWh to empirical session kWh}{5}{subsubsection.5.4.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.4.1}TAZ-level recharge energy (\texttt  {result.taz\_demand\_kwh})}{5}{subsubsection.5.4.1}\protected@file@percent }
+\newlabel{sec:simulation-taz}{{5.4.1}{6}{TAZ-level recharge energy (\texttt {result.taz\_demand\_kwh})}{subsubsection.5.4.1}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.4.2}Matching demand kWh to empirical session kWh}{6}{subsubsection.5.4.2}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {5.5}Step 5: Load profiles (\texttt  {load\_profile.py})}{6}{subsection.5.5}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {6}Outputs}{6}{section.6}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {7}How the main pipeline samples SD, LD, and ETM charging}{6}{section.7}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {7.1}Short distance (SDPTM) --- \texttt  {03\_01}}{6}{subsection.7.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {7.2}Long distance (LDPTM) and external (ETM) --- \texttt  {03\_02}}{7}{subsection.7.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {7.2.1}What \texttt  {TAZfreq} means}{7}{subsubsection.7.2.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {7.2.2}Option 4: which TAZ gets a charging event}{7}{subsubsection.7.2.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Step-by-step (per trip).}{7}{section*.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{LD labeling after TAZ selection.}{8}{section*.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{ETM.}{8}{section*.4}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Numeric example.}{8}{section*.5}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{What Option 4 is not.}{8}{section*.6}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {7.2.3}Consistency with Yanning's R script}{8}{subsubsection.7.2.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {7.3}Where empirical sessions attach --- \texttt  {05\_02}}{8}{subsection.7.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {8}Run commands}{9}{section.8}\protected@file@percent }
-\gdef \@abspage@last{9}
+\@writefile{toc}{\contentsline {section}{\numberline {6}Outputs and example figures}{6}{section.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}Files written by the notebook}{6}{subsection.6.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}Example run (default notebook configuration)}{7}{subsection.6.2}\protected@file@percent }
+\newlabel{sec:example-figures}{{6.2}{7}{Example run (default notebook configuration)}{subsection.6.2}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces All 365 daily fleet charging load curves (light blue) and the mean curve across days (black). At large fleet size, curves often appear nearly parallel because the law of large numbers stabilises the hour-of-day \emph  {shape}; day-to-day differences are mostly small changes in total scale.}}{7}{figure.1}\protected@file@percent }
+\newlabel{fig:daily-load-lines}{{1}{7}{All 365 daily fleet charging load curves (light blue) and the mean curve across days (black). At large fleet size, curves often appear nearly parallel because the law of large numbers stabilises the hour-of-day \emph {shape}; day-to-day differences are mostly small changes in total scale}{figure.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.3}TAZ-level recharge energy maps}{7}{subsection.6.3}\protected@file@percent }
+\newlabel{sec:taz-maps}{{6.3}{7}{TAZ-level recharge energy maps}{subsection.6.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.4}Daily curve variability vs.\ \texttt  {Reference\_Code/6}}{7}{subsection.6.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}How the main pipeline samples SD, LD, and ETM charging}{7}{section.7}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Hourly load variability across the 365 simulated days: 5th--95th percentile band (shaded), median (navy), and mean (dashed orange). This view highlights residual day-to-day spread that is hard to see when overlaying all daily curves.}}{8}{figure.2}\protected@file@percent }
+\newlabel{fig:percentile-band}{{2}{8}{Hourly load variability across the 365 simulated days: 5th--95th percentile band (shaded), median (navy), and mean (dashed orange). This view highlights residual day-to-day spread that is hard to see when overlaying all daily curves}{figure.2}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Mean daily charging load decomposed by location type (home, work, public), stacked by hour. Home dominates under default \texttt  {RAW\_SHARES} location weights (68\% / 4\% / 28\%).}}{8}{figure.3}\protected@file@percent }
+\newlabel{fig:load-by-type}{{3}{8}{Mean daily charging load decomposed by location type (home, work, public), stacked by hour. Home dominates under default \texttt {RAW\_SHARES} location weights (68\% / 4\% / 28\%)}{figure.3}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Total annual recharge energy by TAZ (home + work + public).}}{9}{figure.4}\protected@file@percent }
+\newlabel{fig:taz-total-map}{{4}{9}{Total annual recharge energy by TAZ (home + work + public)}{figure.4}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Annual recharge energy by TAZ and location type: home (left), work (center), public (right).}}{9}{figure.5}\protected@file@percent }
+\newlabel{fig:taz-by-type-maps}{{5}{9}{Annual recharge energy by TAZ and location type: home (left), work (center), public (right)}{figure.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.1}Short distance (SDPTM) --- \texttt  {03\_01}}{10}{subsection.7.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.2}Long distance (LDPTM) and external (ETM) --- \texttt  {03\_02}}{10}{subsection.7.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {7.2.1}What \texttt  {TAZfreq} means}{10}{subsubsection.7.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {7.2.2}Option 4: which TAZ gets a charging event}{10}{subsubsection.7.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Step-by-step (per trip).}{10}{section*.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{LD labeling after TAZ selection.}{11}{section*.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{ETM.}{11}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Numeric example.}{11}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{What Option 4 is not.}{11}{section*.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {7.2.3}Consistency with Yanning's R script}{11}{subsubsection.7.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.3}Where empirical sessions attach --- \texttt  {05\_02}}{12}{subsection.7.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {8}Run commands}{12}{section.8}\protected@file@percent }
+\gdef \@abspage@last{12}
