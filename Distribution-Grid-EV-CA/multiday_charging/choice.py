@@ -23,6 +23,96 @@ def location_weight_vector(cfg: MultiDayConfig) -> np.ndarray:
     return np.array([cfg.location_weights[loc] for loc in LOCATIONS], dtype=float)
 
 
+def _greedy_energy_budget(
+    demand: np.ndarray,
+    budgets: np.ndarray,
+    feasible: np.ndarray | None,
+    fallback_priorities: np.ndarray,
+    labels: tuple[str, ...],
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Assign each row to a label by depleting per-category kWh budgets greedily."""
+    m = demand.shape[0]
+    k = len(labels)
+    remaining = budgets.astype(float).copy()
+    out = np.empty(m, dtype=object)
+    order = rng.permutation(m)
+
+    for i in order:
+        d = float(demand[i])
+        if feasible is None:
+            feas_idx = np.arange(k, dtype=int)
+        else:
+            feas_idx = np.flatnonzero(feasible[i])
+
+        if feas_idx.size == 0:
+            choice = int(np.argmax(fallback_priorities))
+        elif feas_idx.size == 1:
+            choice = int(feas_idx[0])
+        else:
+            choice = int(feas_idx[np.argmax(remaining[feas_idx])])
+
+        out[i] = labels[choice]
+        remaining[choice] -= d
+
+    return out
+
+
+def assign_locations_energy_budget(
+    feasible: np.ndarray,
+    demand: np.ndarray,
+    target_shares: np.ndarray,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Assign locations so each day's recharge kWh tracks fleet energy shares.
+
+    ``target_shares`` are absolute fleet fractions (home / work / public) that
+    sum to 1.  Among feasible locations, each vehicle is assigned to the type
+    with the largest remaining daily kWh budget.
+    """
+    shares = target_shares / target_shares.sum()
+    total_demand = float(demand.sum())
+    budgets = shares * total_demand
+    return _greedy_energy_budget(
+        demand,
+        budgets,
+        feasible,
+        shares,
+        LOCATIONS,
+        rng,
+    )
+
+
+def assign_public_levels_energy_budget(
+    demand_pub: np.ndarray,
+    dc_share: float,
+    l2_share: float,
+    total_day_demand: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Assign DC vs L2 for public sessions using absolute fleet energy shares.
+
+    ``dc_share`` and ``l2_share`` are fractions of total fleet recharge kWh
+    (e.g. 0.20 and 0.08 from Reference RAW_SHARES), not shares within public.
+    """
+    levels = ("DC", "L2")
+    n = demand_pub.shape[0]
+    if n == 0:
+        return np.array([], dtype="U8")
+
+    shares = np.array([dc_share, l2_share], dtype=float)
+    budgets = shares * total_day_demand
+    priorities = shares / shares.sum()
+    return _greedy_energy_budget(
+        demand_pub,
+        budgets,
+        None,
+        priorities,
+        levels,
+        rng,
+    ).astype("U8")
+
+
 def choose_locations(
     feasible: np.ndarray,            # [m, 3] bool, columns = LOCATIONS
     base_weights: np.ndarray,        # [3]

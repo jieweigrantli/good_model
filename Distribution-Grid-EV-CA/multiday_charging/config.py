@@ -24,10 +24,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 
 # Energy demand bin edges (kWh), identical to 05_02 in the parent pipeline.
 DEFAULT_BIN_EDGES: tuple[float, ...] = (0, 5, 10, 15, 20, 30, 50, 80, float("inf"))
+
+LOCATION_SELECTION_MODES = ("energy_budget", "session_prob")
 
 
 @dataclass
@@ -73,14 +76,16 @@ class MultiDayConfig:
     )
 
     # ---- charging-location model ------------------------------------------
-    # Base preference weights among feasible locations on a charging day.
-    # Only feasible locations (see access flags / daily availability) are kept,
-    # then re-normalised.
-    # Matches Reference_Code RAW_SHARES: Residential 0.68, Workplace 0.04,
-    # Public_L2 0.08 + DCFC 0.20 = 0.28 public.
+    # Fleet-wide recharge energy fractions (kWh), matching Reference_Code
+    # RAW_SHARES.  With ``location_selection='energy_budget'`` (default), each
+    # day's triggered recharge is allocated greedily to hit these shares.
+    # With ``location_selection='session_prob'``, the same values are used as
+    # per-session choice weights among feasible locations (legacy behaviour).
     location_weights: dict[str, float] = field(
         default_factory=lambda: {"home": 0.68, "work": 0.04, "public": 0.28}
     )
+    # How to interpret ``location_weights`` when assigning charge locations.
+    location_selection: Literal["energy_budget", "session_prob"] = "energy_budget"
     # Fraction of the fleet with a home charger.
     home_access_share: float = 0.80
     # Fraction of the fleet that *can* charge at work (has access at some site).
@@ -91,7 +96,10 @@ class MultiDayConfig:
     public_trip_prob: float = 0.85
 
     # ---- public charger level split (when location == public) -------------
-    # DC vs L2 within public; default matches RAW_SHARES (DCFC 0.20, Public_L2 0.08).
+    # Absolute fleet recharge energy fractions for DC and public L2.  Defaults
+    # match RAW_SHARES (DCFC 0.20, Public_L2 0.08); they sum to
+    # ``location_weights['public']`` (0.28).  Under ``energy_budget`` mode each
+    # day's public-assigned kWh is split greedily toward these targets.
     public_level_weights: dict[str, float] = field(
         default_factory=lambda: {"DC": 0.20, "L2": 0.08}
     )
@@ -123,6 +131,25 @@ class MultiDayConfig:
 
     # ---- output ------------------------------------------------------------
     out_dir: str = "multiday_charging/outputs"
+
+    def __post_init__(self) -> None:
+        if self.location_selection not in LOCATION_SELECTION_MODES:
+            raise ValueError(
+                f"location_selection must be one of {LOCATION_SELECTION_MODES}, "
+                f"got {self.location_selection!r}"
+            )
+        loc_sum = sum(self.location_weights.values())
+        if abs(loc_sum - 1.0) > 0.01:
+            raise ValueError(
+                f"location_weights must sum to ~1.0 (fleet energy shares), got {loc_sum:.4f}"
+            )
+        pub_sum = sum(self.public_level_weights.values())
+        public_share = self.location_weights.get("public", 0.0)
+        if abs(pub_sum - public_share) > 0.01:
+            raise ValueError(
+                "public_level_weights must sum to location_weights['public'] "
+                f"({public_share:.4f}); got {pub_sum:.4f}"
+            )
 
     # -----------------------------------------------------------------------
     def normalised_battery_mix(self) -> dict[float, float]:

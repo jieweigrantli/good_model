@@ -29,7 +29,15 @@ import numpy as np
 import pandas as pd
 
 from config import MultiDayConfig
-from choice import LOCATIONS, choose_locations, location_weight_vector, sample_home_housing, sample_public_levels
+from choice import (
+    LOCATIONS,
+    assign_locations_energy_budget,
+    assign_public_levels_energy_budget,
+    choose_locations,
+    location_weight_vector,
+    sample_home_housing,
+    sample_public_levels,
+)
 
 _LOC_TO_CODE = {"home": 0, "work": 1, "public": 2}
 _CODE_TO_LOC = {v: k for k, v in _LOC_TO_CODE.items()}
@@ -314,6 +322,8 @@ def simulate(
 
     n_sessions = 0
     ctype_counts = {ct: 0 for ct in LOCATIONS}
+    energy_by_type = {ct: 0.0 for ct in LOCATIONS}
+    energy_by_public_level = {"DC": 0.0, "L2": 0.0}
     sum_esess = 0.0
 
     taz_tracker = _init_taz_tracker(fleet)
@@ -336,9 +346,13 @@ def simulate(
         feas[:, 0] = home_access[idx]
         feas[:, 1] = work_avail[idx, d]
         feas[:, 2] = public_avail[idx, d]
-        location = choose_locations(feas, base_w, rng)
 
         demand = np.minimum(cum_e[idx], usable[idx])
+        if cfg.location_selection == "energy_budget":
+            location = assign_locations_energy_budget(feas, demand, base_w, rng)
+        else:
+            location = choose_locations(feas, base_w, rng)
+
         bins = _bin_of(demand, cfg)
 
         sub = np.empty(idx.size, dtype=object)
@@ -359,7 +373,16 @@ def simulate(
             housing_out[is_work] = ""
             level_out[is_work] = "L2"
         if is_pub.any():
-            lv = sample_public_levels(int(is_pub.sum()), cfg, rng)
+            if cfg.location_selection == "energy_budget":
+                lv = assign_public_levels_energy_budget(
+                    demand[is_pub],
+                    cfg.public_level_weights["DC"],
+                    cfg.public_level_weights["L2"],
+                    float(demand.sum()),
+                    rng,
+                )
+            else:
+                lv = sample_public_levels(int(is_pub.sum()), cfg, rng)
             sub[is_pub] = lv
             housing_out[is_pub] = ""
             level_out[is_pub] = np.asarray(lv, dtype="U8")
@@ -378,7 +401,14 @@ def simulate(
 
         n_sessions += idx.size
         for ct in LOCATIONS:
-            ctype_counts[ct] += int((location == ct).sum())
+            mask = location == ct
+            ctype_counts[ct] += int(mask.sum())
+            energy_by_type[ct] += float(demand[mask].sum())
+        if is_pub.any():
+            for lv_name in ("DC", "L2"):
+                mask = is_pub & (level_out == lv_name)
+                if mask.any():
+                    energy_by_public_level[lv_name] += float(demand[mask].sum())
         sum_esess += float(np.nansum(esess))
 
         if store_sessions:
@@ -396,7 +426,9 @@ def simulate(
         cum_e[idx] = 0.0
         days_since[idx] = 0
 
-    summary = _build_summary(cfg, n_sessions, ctype_counts, sum_esess)
+    summary = _build_summary(
+        cfg, n_sessions, ctype_counts, sum_esess, energy_by_type, energy_by_public_level
+    )
     taz_df = (
         _taz_demand_frame(taz_vals, taz_demand)
         if taz_demand is not None
@@ -454,6 +486,8 @@ def _build_summary(
     n_sessions: int,
     ctype_counts: dict[str, int],
     sum_esess: float,
+    energy_by_type: dict[str, float] | None = None,
+    energy_by_public_level: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     rows = [("total_sessions", n_sessions)]
     rows.append(
@@ -465,6 +499,30 @@ def _build_summary(
     for ct in LOCATIONS:
         share = ctype_counts[ct] / n_sessions if n_sessions else 0.0
         rows.append((f"share_{ct}", round(share, 4)))
+    total_energy = (
+        sum(energy_by_type.values()) if energy_by_type is not None else 0.0
+    )
+    if energy_by_type is not None and total_energy > 0:
+        for ct in LOCATIONS:
+            rows.append(
+                (
+                    f"energy_share_{ct}",
+                    round(energy_by_type[ct] / total_energy, 4),
+                )
+            )
+    if energy_by_public_level is not None and total_energy > 0:
+        rows.append(
+            (
+                "energy_share_dc",
+                round(energy_by_public_level["DC"] / total_energy, 4),
+            )
+        )
+        rows.append(
+            (
+                "energy_share_public_l2",
+                round(energy_by_public_level["L2"] / total_energy, 4),
+            )
+        )
     mean_es = sum_esess / n_sessions if n_sessions else 0.0
     rows.append(("mean_session_energy_kwh", round(mean_es, 2)))
     return pd.DataFrame(rows, columns=["metric", "value"])

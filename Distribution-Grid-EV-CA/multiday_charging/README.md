@@ -17,7 +17,7 @@ It requires the empirical session pool at
 | 1 | Fleet with different battery capacities + charging-frequency preference | `fleet.py` |
 | 2 | Short-distance daily trip profile with destination labels (H/W/P) | `trips.py` |
 | 3 | Empirical session pool (home, work, public L2, public DC) | `session_pool.py` |
-| 4 | Charging-location probability matrix (Home/Work/Public) | `choice.py` + `config.py` |
+| 4 | Charging-location energy shares (Home/Work/Public) | `choice.py` + `config.py` |
 | 5 | Charging-frequency probability matrix (every 1..7 days) | `config.py` -> `fleet.py` |
 | 6 | SOC-aware multi-day sampling logic | `sampling.py` |
 | - | Hourly load aggregation + percentiles | `load_profile.py` |
@@ -32,11 +32,11 @@ when **either**:
 - the battery would be depleted (`cumulative_energy >= usable_kwh`), where
   `usable_kwh = battery_kwh * (1 - reserve_soc)`.
 
-On a charging day a feasible location (home/work/public) is chosen from the
-location matrix, the recharge energy (depletion since last charge, capped at the
-usable pack) is binned, and an empirical session of the matching
-`(charge_type, sub-type, bin)` is drawn to supply `start_hour`, `end_hour`, and
-`power`.
+On a charging day a feasible location (home/work/public) is chosen to match the
+configured **fleet recharge energy shares** (default: greedy daily kWh budgeting).
+The recharge energy (depletion since last charge, capped at the usable pack) is
+binned, and an empirical session of the matching `(charge_type, sub-type, bin)`
+is drawn to supply `start_hour`, `end_hour`, and `power`.
 
 ## Run it
 
@@ -53,8 +53,10 @@ Open `run_multiday_charging.ipynb`, edit the single **Configuration** cell, then
 - `battery_mix` — capacity distribution `{kWh: share}`
 - `reserve_soc` — minimum state of charge before a forced charge
 - `charge_interval_probs` — frequency matrix `{days: prob}`
-- `location_weights`, `home_access_share`, `work_access_share`,
-  `work_trip_prob`, `public_trip_prob` — location feasibility/preference
+- `location_weights` — fleet recharge **energy** fractions (kWh): home / work / public (default 0.68 / 0.04 / 0.28, matching Reference RAW_SHARES)
+- `location_selection` — `"energy_budget"` (default) allocates each day's kWh greedily toward `location_weights`; `"session_prob"` uses legacy per-session lottery weights
+- `public_level_weights` — absolute fleet energy fractions for public DC and L2 (default 0.20 / 0.08)
+- `home_access_share`, `work_access_share`, `work_trip_prob`, `public_trip_prob` — location feasibility
 - `mean_daily_vmt`, `vmt_*_cv`, `no_travel_prob` — daily-driving model
 - `efficiency_mi_per_kwh` — 3.0 reproduces the parent pipeline's `dist/3` rule
 
