@@ -17,8 +17,11 @@ Notes on the R→Python translation:
 from __future__ import annotations
 
 import glob
+import json
 import os
 import pickle
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Iterable
 
@@ -44,23 +47,266 @@ GRIP_SUBSTATION_LOAD_PROFILE = GRIP_SHP_DIR / "SubstationLoadProfile.shp"
 GRIP_FEEDER_LOAD_PROFILE = GRIP_SHP_DIR / "FeederLoadProfile.shp"
 
 TAZ_CENTROID_GPKG = DATA_DIR / "shps" / "TAZ_centroid_sf.gpkg"
+TAZ_POLYGON_SHP = DATA_DIR / "shps" / "taz_id.shp"
 MULTIDAY_OUTPUT_DIR = PKG_DIR / "multiday_charging" / "outputs"
 TAZ_TOTAL_DEMAND_CSV = MULTIDAY_OUTPUT_DIR / "taz_total_demand_kwh.csv"
 FLEET_DAILY_HOURLY_NPY = MULTIDAY_OUTPUT_DIR / "daily_hourly_load_kW.npy"
 
 MAPPING_DIR = DATA_DIR / "mapping"
 MESO_DIR = DATA_DIR / "meso"
+RESULTS_DIR = DATA_DIR / "results"
 FIGURES_ASTR_DIR = PKG_DIR / "figures" / "ASTR_diagnostics"
 ASTR_RESULTS_DIR = PKG_DIR / "astr_meso_results"
 
-# HIFLD Electric Substations cache (downloaded by 08_01 if missing)
+# Spatial caches (downloaded on first use if missing)
 HIFLD_SUBSTATIONS_GPKG = DATA_DIR / "hifld" / "electric_substations_ca.gpkg"
+CEC_UTILITY_GPKG = DATA_DIR / "hifld" / "ca_electric_utility_territories.gpkg"
+HIFLD_TX_LINES_GPKG = DATA_DIR / "hifld" / "electric_transmission_lines_ca.gpkg"
+
+# Canonical ASTR meso artifacts
+TAZ_TO_SUBSTATION_CSV = MAPPING_DIR / "taz_to_substation.csv"
+TAZ_HOURLY_EV_8760 = MESO_DIR / "taz_hourly_ev_8760.parquet"
+SUB_HOURLY_LOADS_8760 = MESO_DIR / "substation_hourly_loads_8760.parquet"
+CA_NETWORK_JSON = MESO_DIR / "ca_substation_network.json"
+NESTED_GRAPH_JSON = MESO_DIR / "wecc_ca_nested_graph.json"
+SCENARIO_SCALES_JSON = MESO_DIR / "scenario_capacity_scales.json"
+SUMMARY_METRICS_JSON = RESULTS_DIR / "summary_metrics_8760.json"
+FOUR_WEEK_METRICS_JSON = RESULTS_DIR / "summary_metrics_four_week.json"
+RUNS_8760_PARQUET = RESULTS_DIR / "S0_S3_8760_runs.parquet"
+RUNS_FOUR_WEEK_PARQUET = RESULTS_DIR / "S0_S3_four_week_runs.parquet"
+
+WEC_JSON = REPO_ROOT / "Examples" / "WEC.json"
+WEC_MODIFIED_JSON = REPO_ROOT / "Examples" / "WEC_modified.json"
+POLICIES_JSON = REPO_ROOT / "Examples" / "policies.json"
+
+# California Albers Equal Area (meters) — required for ASTR spatial joins
+CA_ALBERS_CRS = "EPSG:3310"
+
+# Rated-kV → MVA heuristics when a line has no rated MVA
+KV_TO_MVA = {
+    500: 1500,
+    345: 1000,
+    230: 400,
+    161: 250,
+    138: 200,
+    115: 150,
+    69: 80,
+    60: 60,
+}
+
+# Named CA intertie / path attachment points (lon, lat WGS84)
+INTERTIE_POINTS = {
+    "Path66_Malin": {
+        "lon": -121.55,
+        "lat": 42.00,
+        "parent_ba": "WEC_CALN",
+        "remote_ba": "WECC_PNW",
+        "path": "Path 66 / COI",
+    },
+    "Path15_LosBanos": {
+        "lon": -120.85,
+        "lat": 37.05,
+        "parent_ba": "WEC_CALN",
+        "remote_ba": "WECC_SCE",
+        "path": "Path 15",
+    },
+    "Path15_Midway": {
+        "lon": -119.60,
+        "lat": 35.40,
+        "parent_ba": "WEC_CALN",
+        "remote_ba": "WECC_SCE",
+        "path": "Path 15",
+    },
+    "Path26_Vincent": {
+        "lon": -118.38,
+        "lat": 34.48,
+        "parent_ba": "WECC_SCE",
+        "remote_ba": "WEC_CALN",
+        "path": "Path 26",
+    },
+    "PaloVerde_Devers": {
+        "lon": -116.57,
+        "lat": 33.93,
+        "parent_ba": "WECC_SCE",
+        "remote_ba": "WECC_AZ",
+        "path": "Palo Verde",
+    },
+}
+
+# Substring match on CEC/HIFLD utility-territory names → WECC BA
+UTILITY_TO_BA = (
+    ("pacific gas", "WEC_CALN"),
+    ("pg&e", "WEC_CALN"),
+    ("pge", "WEC_CALN"),
+    ("sacramento municipal", "WEC_BANC"),
+    ("smud", "WEC_BANC"),
+    ("modesto irrigation", "WEC_BANC"),
+    ("turlock", "WEC_BANC"),
+    ("roseville", "WEC_BANC"),
+    ("redding", "WEC_BANC"),
+    ("southern california edison", "WECC_SCE"),
+    ("sce", "WECC_SCE"),
+    ("los angeles", "WEC_LADW"),
+    ("ladwp", "WEC_LADW"),
+    ("san diego gas", "WEC_SDGE"),
+    ("sdg&e", "WEC_SDGE"),
+    ("sdge", "WEC_SDGE"),
+    ("imperial irrigation", "WECC_IID"),
+    ("iid", "WECC_IID"),
+)
+
+PGE_NAME_TOKENS = ("pacific gas", "pg&e", "pge")
+
+HOUSING_COL_CANDIDATES = (
+    "HH", "HOUSEHOLDS", "HOUSING", "TOTHH", "hh", "Households", "housing",
+)
+EMPLOYMENT_COL_CANDIDATES = (
+    "EMP", "EMPLOY", "EMPLOYMENT", "TOTEMP", "emp", "Jobs", "employment",
+)
 
 
 def is_meso_delivery_node(node_id: str) -> bool:
     """True for nested CA delivery nodes (SUB_* substations or aggregated MESO_*)."""
     s = str(node_id)
     return s.startswith("SUB_") or s.startswith("MESO_")
+
+
+def resolve_wec_json() -> Path:
+    """Prefer WEC_modified.json when present; otherwise Examples/WEC.json."""
+    if WEC_MODIFIED_JSON.is_file():
+        return WEC_MODIFIED_JSON
+    return WEC_JSON
+
+
+def require_file(path: Path, hint: str = "") -> Path:
+    if not path.is_file():
+        extra = f" {hint}" if hint else ""
+        raise FileNotFoundError(f"Required input missing: {path}.{extra}")
+    return path
+
+
+def line_limit_mva(row, default_kv: float = 115.0) -> float:
+    """Rated MVA if present, else voltage heuristic (500 kV≈1500 MVA, …)."""
+    for col in (
+        "RATEDMVA", "RatedMVA", "RATED_MVA", "MVA", "CAPACITY", "CAP_MVA",
+        "RATE_MVA", "THERMALMVA",
+    ):
+        if col in getattr(row, "index", ()) or (isinstance(row, dict) and col in row):
+            val = row[col]
+            try:
+                if val is not None and float(val) > 0:
+                    return float(val)
+            except (TypeError, ValueError):
+                pass
+    kv = default_kv
+    for col in ("RATEDKV", "RatedKV", "VOLTAGE", "KV", "VOLT_CLASS", "VOLT"):
+        if col in getattr(row, "index", ()) or (isinstance(row, dict) and col in row):
+            try:
+                v = float(row[col])
+                if v > 0:
+                    kv = v
+                    break
+            except (TypeError, ValueError):
+                pass
+    keys = np.array(list(KV_TO_MVA.keys()), dtype=float)
+    nearest = int(keys[np.argmin(np.abs(keys - kv))])
+    return float(KV_TO_MVA[nearest])
+
+
+def line_limit_w(row, default_kv: float = 115.0) -> float:
+    return line_limit_mva(row, default_kv=default_kv) * 1e6
+
+
+def pad_or_wrap_hours(arr, n: int) -> np.ndarray:
+    """Return a 1-D float array of length n (pad last / wrap / truncate)."""
+    a = np.asarray(arr, dtype=float).reshape(-1)
+    if a.size == n:
+        return a
+    if a.size == 0:
+        return np.zeros(n, dtype=float)
+    if a.size > n:
+        return a[:n]
+    out = np.empty(n, dtype=float)
+    reps = n // a.size
+    out[: reps * a.size] = np.tile(a, reps)
+    rem = n - reps * a.size
+    if rem:
+        out[reps * a.size :] = a[:rem]
+    return out
+
+
+def slice_hours(arr, start_hour: int, num_hours: int) -> np.ndarray:
+    a = np.asarray(arr, dtype=float).reshape(-1)
+    if a.size == 0:
+        return np.zeros(num_hours, dtype=float)
+    idx = (np.arange(num_hours) + int(start_hour)) % a.size
+    return a[idx]
+
+
+def concat_seasonal_weeks(arr, week_hours: int | None = None) -> np.ndarray:
+    """Concatenate the four representative weeks into one chronology."""
+    n = NUM_HOURS_WEEK if week_hours is None else int(week_hours)
+    parts = [slice_hours(arr, int(w["start_hour"]), n) for w in SEASONAL_WEEKS]
+    return np.concatenate(parts)
+
+
+def download_arcgis_geojson(query_url: str, out_path: Path, where: str = "1=1"):
+    """Page an ArcGIS FeatureServer /query endpoint into a GeoPackage."""
+    import geopandas as gpd
+
+    ensure_dir(out_path.parent)
+    frames = []
+    offset = 0
+    page_size = 2000
+    while True:
+        params = (
+            f"?where={urllib.parse.quote(where)}"
+            f"&outFields=*"
+            f"&returnGeometry=true&outSR=4326"
+            f"&resultOffset={offset}&resultRecordCount={page_size}"
+            f"&f=geojson"
+        )
+        url = query_url + params
+        print(f"  ArcGIS download offset={offset} ...")
+        with urllib.request.urlopen(url, timeout=120) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        feats = payload.get("features") or []
+        if not feats:
+            break
+        frames.append(gpd.GeoDataFrame.from_features(feats, crs="EPSG:4326"))
+        if len(feats) < page_size:
+            break
+        offset += page_size
+    if not frames:
+        raise RuntimeError(f"ArcGIS download returned no features: {query_url}")
+    out = gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), geometry="geometry", crs="EPSG:4326")
+    out.to_file(out_path, driver="GPKG")
+    print(f"  wrote {out_path} ({len(out)} features)")
+    return out
+
+
+def utility_is_pge(name: str) -> bool:
+    s = str(name).lower()
+    return any(tok in s for tok in PGE_NAME_TOKENS)
+
+
+def utility_to_ba(name: str) -> str | None:
+    s = str(name).lower()
+    for token, ba in UTILITY_TO_BA:
+        if token in s:
+            return ba
+    return None
+
+
+def pick_column(columns, candidates: Iterable[str]) -> str | None:
+    cols = list(columns)
+    lower = {c.lower(): c for c in cols}
+    for cand in candidates:
+        if cand in cols:
+            return cand
+        if cand.lower() in lower:
+            return lower[cand.lower()]
+    return None
 
 
 CALIFORNIA_REGIONS = [
@@ -80,6 +326,19 @@ SEASONAL_WEEKS = [
     {"name": "december", "start_hour": 8016, "month": "December"},
 ]
 NUM_HOURS_WEEK = 7 * 24
+HOURS_YEAR = 8760
+NUM_HOURS_FOUR_WEEK = len(SEASONAL_WEEKS) * NUM_HOURS_WEEK
+
+
+def horizon_hours(horizon: str) -> int:
+    h = str(horizon).lower().replace("-", "_")
+    if h in {"8760", "year", "annual", "full"}:
+        return HOURS_YEAR
+    if h in {"four_week", "fourweek", "seasonal_concat", "4week"}:
+        return NUM_HOURS_FOUR_WEEK
+    if h in {"week", "weekly", "season"}:
+        return NUM_HOURS_WEEK
+    raise ValueError(f"Unknown horizon {horizon!r}")
 
 
 def grip_layer(name: str) -> Path:

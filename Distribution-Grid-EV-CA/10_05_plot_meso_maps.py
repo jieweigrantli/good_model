@@ -57,14 +57,14 @@ def _save(fig: plt.Figure, name: str) -> None:
 
 
 def load_ca_outline() -> gpd.GeoDataFrame:
-    """Dissolve CA census tracts to a state silhouette (EPSG:26910)."""
-    cache = C.MESO_DIR / "ca_outline_26910.gpkg"
+    """Dissolve CA census tracts to a state silhouette (EPSG:3310)."""
+    cache = C.MESO_DIR / "ca_outline_3310.gpkg"
     if cache.is_file():
         return gpd.read_file(cache)
     tracts = gpd.read_file(TRACT_SHP)
     if tracts.crs is None:
         tracts = tracts.set_crs(4269)
-    tracts = tracts.to_crs(26910)
+    tracts = tracts.to_crs(C.CA_ALBERS_CRS)
     outline = gpd.GeoDataFrame(
         {"name": ["California"]},
         geometry=[unary_union(tracts.geometry)],
@@ -75,7 +75,7 @@ def load_ca_outline() -> gpd.GeoDataFrame:
 
 
 def load_hubs() -> gpd.GeoDataFrame:
-    hubs = gpd.read_file(C.MESO_DIR / "meso_hubs.gpkg").to_crs(26910)
+    hubs = gpd.read_file(C.MESO_DIR / "meso_hubs.gpkg").to_crs(C.CA_ALBERS_CRS)
     nodes = pd.read_csv(C.MESO_DIR / "meso_nodes.csv")
     hubs = hubs.drop(columns=[c for c in hubs.columns if c in nodes.columns and c != "hub_id"], errors="ignore")
     hubs = hubs.merge(nodes, on="hub_id", how="left")
@@ -162,7 +162,7 @@ def plot_meso_hubs_map() -> None:
 
 def plot_substation_concentration_with_silhouette() -> None:
     outline = load_ca_outline()
-    grip = gpd.read_file(C.GRIP_ED_SUBSTATIONS).to_crs(26910)
+    grip = gpd.read_file(C.GRIP_ED_SUBSTATIONS).to_crs(C.CA_ALBERS_CRS)
     grip["substation_id"] = grip["Substati00"].astype(str)
     rank = pd.read_csv(C.MESO_DIR / "substation_ev_rank_mean.csv")
     rank["substation_id"] = rank["substation_id"].astype(str)
@@ -212,7 +212,7 @@ def plot_substation_concentration_with_silhouette() -> None:
         for _, r in gw.iterrows():
             lon, lat = ba_ll.get(r["substation_id"], (-120.0, 37.0))
             rows.append({"mean_week_kwh": r["mean_week_kwh"], "geometry": Point(lon, lat)})
-        gw_g = gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326").to_crs(26910)
+        gw_g = gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326").to_crs(C.CA_ALBERS_CRS)
         ax.scatter(
             gw_g.geometry.x,
             gw_g.geometry.y,

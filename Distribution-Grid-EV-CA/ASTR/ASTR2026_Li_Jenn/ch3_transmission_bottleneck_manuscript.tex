@@ -20,7 +20,7 @@
 \maketitle
 
 \begin{abstract}
-Electric vehicle (EV) charging can change consequential power-sector emissions when spatial clustering interacts with constrained delivery of remote clean generation. We develop a two-layer EV--grid framework for California: (i)~a multi-day, SOC-aware charging demand model that allocates fleet load to transportation analysis zones (TAZs), and (ii)~a Western Electricity Coordinating Council (WECC) Grid Optimized Operation Dispatch (GOOD) model nested with a California meso-grid of aggregated substation hubs. Using PG\&E Grid Resource Integration Portal (GRIP) substations and transmission lines, TAZ centroids are mapped to nearest substations, clustered into 80 meso hubs, and linked to parent balancing-area nodes via capacity-constrained interfaces. Four seasonal weeks and four counterfactuals (S0--S3) isolate a congestion-emissions penalty \(P_{cong}\) and a BESS mitigation metric \(M_{BESS}\). Seasonal-week solves on a local workstation produce structured diurnal EV demand (peak \(\sim\)3.5--3.8~GW for a 2.5~million vehicle fleet) and positive \(P_{cong}\) in all four seasons, motivating storage and transfer upgrades as distinct levers from temporal load shifting alone.
+Electric vehicle (EV) charging can change consequential power-sector emissions when spatial clustering interacts with constrained delivery of remote clean generation. We develop a two-layer EV--grid framework for California: (i)~a multi-day, SOC-aware charging demand model that allocates fleet load to transportation analysis zones (TAZs), and (ii)~a Western Electricity Coordinating Council (WECC) Grid Optimized Operation Dispatch (GOOD) model nested with an \emph{unclustered} California substation graph (PG\&E GRIP \texttt{EDSubstations} plus HIFLD non-PG\&E substations; no k-means aggregation). TAZ centroids are mapped under utility-territory masks in EPSG:3310; WECC California generators, candidate BESS, and named interties (Path~15, Path~26, Path~66/Malin, Palo Verde) snap to the nearest substation. Background (non-EV) balancing-area load is downscaled with housing/employment weights so that \(L^{\text{total}}_{s,t}=w_s\cdot L^{\text{base}}_{\text{BA},t}+L^{\text{EV}}_{s,t}\). Transmission is represented as continuous pipe-flow / net transfer capacity (NTC) limits, so the annual 8{,}760-hour problem is a linear program. Four counterfactuals (S0--S3) isolate a congestion-emissions penalty \(P_{cong}\) and a BESS mitigation metric \(M_{BESS}\). On a 32~GB workstation the production 8760 LP is staged behind a concatenated four-week (672~h) CAPEX--OPEX co-optimization used as the feasibility test.
 \end{abstract}
 
 \section{Introduction}
@@ -33,7 +33,7 @@ A balancing-area consequential-emissions framework can identify how EV charging 
 
 Prior EV--grid studies increasingly combine empirical charging profiles with dispatch or capacity-expansion models to estimate marginal power-sector impacts \citep{powell_scalable_2022,jenn_environmental_2020,jenn_emissions_2023,bruchon_cleaning_2024}. Storage has also been proposed as a mitigation resource for charging-related grid stress because it can shift renewable generation into high-demand charging periods and reduce dependence on constrained imports \citep{mowry_grid_2021,nagarajan_value_2018,ziegler_storage_2019,sihvonen_techno-socio-economic_2025}. Yet the emissions value of storage depends on where it is connected and whether it relieves a binding delivery constraint rather than merely shifting energy temporally.
 
-Our contribution is a two-layer EV--grid modeling framework. The first layer uses balancing-area GOOD to estimate consequential generation and capacity expansion across WECC. The second layer allocates California charging demand to TAZs, maps TAZ centroids to nearby substations (PG\&E GRIP plus gateway proxies outside the PGE footprint), and represents a capacity-constrained California meso delivery layer nested inside WECC. We evaluate S0 (no EV), S1 (EV, constrained delivery, no new BESS), S2 (EV, constrained, endogenous BESS), and S3 (EV, relaxed delivery). The key outputs are
+Our contribution is a two-layer EV--grid modeling framework. The first layer uses balancing-area GOOD to estimate consequential generation and capacity expansion across WECC. The second layer allocates California charging demand to TAZs, maps TAZ centroids to substations under PG\&E vs.\ non-PG\&E utility masks, and represents the full unclustered California transmission graph (GRIP \texttt{TransmissionLines} plus HIFLD) as NTC pipe-flow constraints nested inside WECC. California generators and candidate BESS connect to the nearest substation; Path~15, Path~26, Path~66/Malin, and Palo Verde attach to boundary substations. We evaluate S0 (no EV, nested base load), S1 (EV, constrained delivery, no new BESS), S2 (EV, constrained, endogenous BESS), and S3 (EV, relaxed delivery). The key outputs are
 \[
 P_{cong}=(E_{S1}-E_{S0})-(E_{S3}-E_{S0}),
 \qquad
@@ -59,36 +59,42 @@ where \(w_i\) is annual TAZ charging energy. Home charging is assigned to the ve
   \label{fig:ev-load}
 \end{figure}
 
-\subsection{TAZ--substation mapping and meso aggregation}
+\subsection{TAZ--substation mapping (no clustering)}
 
-Each TAZ \(i\) is represented by its centroid \(c_i\) and assigned to the nearest candidate substation \(s\):
+Each TAZ \(i\) is represented by its centroid \(c_i\) in California Albers (EPSG:3310) and assigned to the nearest candidate substation \(s\) under a utility mask: PG\&E TAZs join only to GRIP \texttt{EDSubstations}; all other TAZs join only to HIFLD/CEC substations.
 \[
-s(i)=\arg\min_{s\in S} dist(c_i,c_s).
+s(i)=\arg\min_{s\in S(i)} dist(c_i,c_s).
 \]
-Candidate set \(S\) combines PG\&E GRIP \texttt{EDSubstations} (\(n=704\)) with balancing-area gateway points for non-PGE California when statewide CEC/HIFLD downloads are unavailable. Hourly substation load is
+Hourly substation EV load is
 \[
 L^{EV}_{s,t}=\sum_{i:s(i)=s} L^{EV}_{i,t}.
 \]
-Substations are clustered into \(N=80\) meso hubs. GRIP \texttt{TransmissionLines} provide hub--hub corridors with transfer capacities inferred from rated kV. Each hub links to a parent California balancing-area node through a bidirectional interface.
+Non-EV balancing-area demand is downscaled with socio-economic weights \(w_s\) (housing and employment shares, renormalized within each parent BA) so that background load consumes line headroom:
+\[
+L^{\text{total}}_{s,t}=w_s\cdot L^{\text{base}}_{\text{BA},t}+L^{EV}_{s,t}.
+\]
+WECC California thermal, solar, wind, and hydro plants with coordinates, plus candidate BESS, are snapped to the same substation nodes. GRIP \texttt{TransmissionLines} supply corridor topology; rated MVA is used when present, otherwise voltage heuristics (\(500\,\mathrm{kV}\approx 1500\,\mathrm{MVA}\), \(230\,\mathrm{kV}\approx 400\,\mathrm{MVA}\), \(115\,\mathrm{kV}\approx 150\,\mathrm{MVA}\)). Each connected component of the substation graph links to its parent BA through a gateway interface; named interties attach to boundary substations.
 
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=0.72\linewidth]{../../figures/ASTR_diagnostics/substation_ev_concentration.png}
-  \caption{EV charging concentration at mapped substations (mean seasonal-week energy). PG\&E GRIP stations shown; southern load is partly represented via BA gateway proxies pending CEC layer ingest.}
+  \caption{EV charging concentration at mapped substations (mean seasonal-week energy). PG\&E GRIP stations and HIFLD non-PG\&E stations; no spatial clustering.}
   \label{fig:sub-conc}
 \end{figure}
 
 \subsection{GOOD and nested delivery layer}
 
-GOOD minimizes operational costs, capital investment, and soft-constraint penalties subject to regional power balance, policy targets, producer limits, load profiles, transmission limits, and storage inventory. We retain the existing WECC balancing-area graph for generation and base load, and add meso hubs that carry only EV Load assets (and optional endogenous Store assets in S2). Nodal balance at meso hubs therefore requires transfers across interfaces and corridors---the congestion mechanism of interest.
-
-Implemented network physics use capacity-constrained directed transfers (GOOD \texttt{Transmission}), a computationally staged surrogate for the DC-flow equations
+GOOD minimizes operational costs, capital investment, and soft-constraint penalties subject to regional power balance, policy targets, producer limits, load profiles, transmission limits, and storage inventory. California substations carry mapped generators, disaggregated base load, EV load, and (in S2) endogenous Store assets. Parent CA balancing-area nodes retain optional renewable CAPEX and WECC interties. Network physics use capacity-constrained directed transfers (GOOD \texttt{Transmission}) implementing NTC pipe-flow
+\[
+-\bar F_{\ell}\le f_{\ell,t}\le \bar F_{\ell},
+\]
+a linear surrogate for the DC-flow equations
 \[
 f_{\ell,t}=b_{\ell}(\theta_{i,t}-\theta_{j,t}),
 \qquad
 -\bar F_{\ell}-z^T_{\ell}\le f_{\ell,t}\le \bar F_{\ell}+z^T_{\ell}
 \]
-stated in the extended abstract. Full angle-based DC OPF remains future work.
+stated in the extended abstract. Because constraints are continuous, the 8{,}760-hour co-optimization of capacity \(Z\) and dispatch \(X\) is a linear program. Full angle-based DC OPF remains future work.
 
 \subsection{Scenarios and experiment design}
 
@@ -97,21 +103,21 @@ stated in the extended abstract. Full angle-based DC OPF remains future work.
 \toprule
 Scenario & Description \\
 \midrule
-S0 & Baseline WECC week, no meso EV \\
-S1 & EV on meso hubs; tight meso/interface caps; no new BESS \\
-S2 & S1 + endogenous BESS on hubs \\
-S3 & EV on meso hubs; relaxed (10\(\times\)) meso/interface caps \\
+S0 & Nested substations with base load only; no EV \\
+S1 & EV at substations; rated NTC; no new BESS \\
+S2 & S1 + endogenous BESS at substations with EV peak \(>0\) \\
+S3 & EV at substations; relaxed (\(10\times\)) CA NTC and BA interfaces \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Representative weeks are March, June, September, and December (168~h each), matching prior balancing-area GOOD seasonal experiments. Reporting metrics include top hubs by EV energy, corridor capacities, binding transfers (where available), fossil generation deltas, BESS build, emissions per kWh EV, \(P_{cong}\), and \(M_{BESS}\).
+The primary production experiment is a single-shot 8{,}760-hour LP per scenario, co-optimizing annual CAPEX \(Z\) against all operational hours. On a 32~GB workstation the feasibility test---and the Stage-1 fallback if 8760 memory exceeds \(\sim\)24~GB---concatenates four representative weeks (March, June, September, December; 672~h) into one LP so CAPEX is not seasonally distorted. Stage 2 of the fallback fixes \(Z=Z^*\) and solves twelve monthly dispatch LPs. Reporting metrics include top substations by EV energy, corridor capacities, binding line-hours, fossil generation deltas, BESS build, emissions per kWh EV, \(P_{cong}\), and \(M_{BESS}\).
 
 \section{Results}
 
 \subsection{Spatial EV demand}
 
-Fleet seasonal-week peaks are approximately 3.4--3.8~GW (Figure~\ref{fig:ev-weeks}). Aggregation to 80 hubs preserves the system peak while concentrating load on a small set of hubs (Figure~\ref{fig:top-hubs}).
+Fleet seasonal-week peaks are approximately 3.4--3.8~GW (Figure~\ref{fig:ev-weeks}). The unclustered substation layer preserves this system peak while concentrating load on a small set of substations (Figure~\ref{fig:top-hubs}).
 
 \begin{figure}[htbp]
   \centering
@@ -123,7 +129,7 @@ Fleet seasonal-week peaks are approximately 3.4--3.8~GW (Figure~\ref{fig:ev-week
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=0.85\linewidth]{../../figures/ASTR_diagnostics/top20_meso_hubs.png}
-  \caption{Top 20 meso hubs by mean seasonal-week EV energy.}
+  \caption{Top 20 substations by mean seasonal-week EV energy.}
   \label{fig:top-hubs}
 \end{figure}
 
@@ -198,7 +204,7 @@ Dec & S3 & \(7.53\times10^7\) & \(7.49\times10^8\) & 96 \\
 
 \subsection{Computational notes}
 
-Balancing-area weeks remain tractable locally (\(\sim\)7--9~minutes per solve). Nested models grow to \(\sim\)1.85~M rows / 0.73~M columns and typically solve in \(\sim\)8--15~minutes with Gurobi dual simplex and MPS I/O; S2 with storage is restricted to the top five EV hubs with a longer time limit. Full-year nested chronology is not attempted on 32~GB RAM; seasonal weeks are the designed screening design. This machine (i5-14600KF, \(\sim\)32~GB RAM, Gurobi~13) can run the staged seasonal experiment locally.
+Balancing-area weeks remain tractable locally (\(\sim\)7--9~minutes per solve). The unclustered nested graph is a pure LP (NTC pipe-flow). Gurobi dual simplex (\texttt{Method=1}), MPS I/O, and \texttt{NodefileStart} are the default memory controls on a 32~GB machine. The concatenated four-week LP (672~h) is the workstation feasibility test and co-optimizes CAPEX against all four seasons simultaneously; the 8{,}760-hour single-shot LP is implemented but reserved until that test succeeds. If 8760 peak memory exceeds \(\sim\)24~GB, Stage~1 keeps the four-week CAPEX solve and Stage~2 dispatches twelve monthly LPs with \(Z\) fixed.
 
 \section{Discussion}
 
@@ -208,12 +214,12 @@ Limitations include: nearest-substation screening (not feeder polygons); BA gate
 
 \section{Conclusion}
 
-We operationalize the ASTR2026 extended abstract as a runnable TAZ\(\to\)substation\(\to\)meso\(\to\)GOOD pipeline with seasonal S0--S3 counterfactuals. Nested seasonal-week solves demonstrate computational feasibility on a workstation and a positive congestion-emissions penalty under relaxed versus constrained California delivery. Parameter calibration of shortfall costs, interface ratings, and BESS siting will refine \(P_{cong}\) and \(M_{BESS}\) for policy interpretation.
+We operationalize the ASTR2026 extended abstract as a TAZ\(\to\)substation\(\to\)unclustered NTC\(\to\)GOOD pipeline with S0--S3 counterfactuals, 8760 artifacts, and a 4-week concatenated LP as the workstation feasibility test. Parameter calibration of shortfall costs, interface ratings, and BESS siting will refine \(P_{cong}\) and \(M_{BESS}\) for policy interpretation.
 
 \section*{Data and code}
 
 Scripts \texttt{08\_01}--\texttt{10\_04} live under \texttt{Distribution-Grid-EV-CA/}. GRIP shapefiles are used from
-\texttt{data/GRIP\_SHP/.../GRIP\_SHP/}. Outputs: \texttt{data/meso/}, \texttt{astr\_meso\_results/}, \texttt{figures/ASTR\_diagnostics/}.
+\texttt{data/GRIP\_SHP/.../GRIP\_SHP/} without re-extraction. Canonical outputs: \texttt{data/mapping/taz\_to\_substation.csv}, \texttt{data/meso/taz\_hourly\_ev\_8760.parquet}, \texttt{data/meso/substation\_hourly\_loads\_8760.parquet}, \texttt{data/meso/ca\_substation\_network.json}, \texttt{data/meso/wecc\_ca\_nested\_graph.json}, \texttt{data/results/summary\_metrics\_8760.json}, \texttt{figures/ASTR\_diagnostics/}.
 
 \newpage
 \bibliographystyle{ieeetr}

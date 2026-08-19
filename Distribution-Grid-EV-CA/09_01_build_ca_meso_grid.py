@@ -1,21 +1,25 @@
 """
 09_01_build_ca_meso_grid.py
 
-Build the California meso delivery layer from GRIP substations (+ gateways),
-attach TransmissionLines for transfer-capacity heuristics, assign parent CA
-BA regions, and attach seasonal EV load profiles at each delivery node.
+Unclustered California substation graph:
+  nodes  = GRIP EDSubstations + HIFLD non-PG&E substations used in the TAZ map
+  edges  = TransmissionLines.shp (plus optional HIFLD lines) with NTC limits
+  assets = WECC CA generators, candidate BESS, named interties snapped to nodes
 
-Default: one GOOD node per substation (abstract-aligned, no k-means).
-Optional aggregation: --aggregate N (e.g. 80) for screening.
+Default: one GOOD node per substation (no clustering).
+Optional screening only: --aggregate N
 
-Outputs under data/meso/:
-  meso_nodes.csv, meso_edges.csv, meso_hubs.gpkg
-  seasonal/<week>/meso_hourly_kW.npy
+Writes:
+  data/meso/ca_substation_network.json
+  data/meso/meso_nodes.csv, meso_edges.csv, meso_hubs.gpkg
+  data/meso/meso_ba_interfaces.csv
+  seasonal/<week>/meso_hourly_kW.npy  (EV) and meso_hourly_total_kW.npy
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -26,317 +30,495 @@ from shapely.geometry import Point
 
 import common as C
 
-# Approximate MW→W capacity from rated kV (screening heuristic)
-KV_TO_MW = {500: 1500, 230: 400, 115: 150, 70: 80, 60: 60}
+HIFLD_LINES_QUERY = (
+    "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/"
+    "Electric_Power_Transmission_Lines/FeatureServer/0/query"
+)
 
 
-def _kv_capacity_w(rated_kv: float) -> float:
-    kv = float(rated_kv) if pd.notna(rated_kv) else 115.0
-    # nearest key
-    keys = np.array(list(KV_TO_MW.keys()))
-    nearest = int(keys[np.argmin(np.abs(keys - kv))])
-    return KV_TO_MW[nearest] * 1e6  # W
+def _to_albers(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    if gdf.crs is None:
+        gdf = gdf.set_crs(4326)
+    return gdf.to_crs(C.CA_ALBERS_CRS)
 
 
-def _ba_centroids() -> dict[str, Point]:
-    """Rough CA BA centroids (lon, lat) for parent assignment."""
-    # approximate population/load centers
-    coords = {
-        "WEC_CALN": (-122.0, 38.0),   # Bay Area / north
-        "WEC_BANC": (-121.5, 38.6),   # Sacramento
-        "WECC_SCE": (-117.5, 34.0),   # LA basin
+def load_substation_nodes() -> gpd.GeoDataFrame:
+    rank_path = C.MESO_DIR / "substation_ev_rank_mean.csv"
+    rank = (
+        pd.read_csv(rank_path)
+        if rank_path.is_file()
+        else pd.DataFrame(columns=["substation_id", "mean_week_kwh", "mean_peak_kW"])
+    )
+    rank["substation_id"] = rank["substation_id"].astype(str)
+    mapping = pd.read_csv(C.TAZ_TO_SUBSTATION_CSV)
+    mapping["substation_id"] = mapping["substation_id"].astype(str)
+    needed = set(mapping["substation_id"])
+
+    frames = []
+    C.require_file(C.GRIP_ED_SUBSTATIONS, hint="Need unzipped GRIP EDSubstations.shp")
+    grip = _to_albers(gpd.read_file(C.GRIP_ED_SUBSTATIONS))
+    id_col = C.pick_column(grip.columns, ("Substati00", "SUBSTATION", "SubstationID"))
+    name_col = C.pick_column(grip.columns, ("Substation", "NAME", "Name"))
+    grip["substation_id"] = grip[id_col].astype(str) if id_col else grip.index.astype(str)
+    grip["substation_name"] = grip[name_col].astype(str) if name_col else grip["substation_id"]
+    grip["source"] = "grip"
+    frames.append(grip[["substation_id", "substation_name", "source", "geometry"]])
+
+    if C.HIFLD_SUBSTATIONS_GPKG.is_file():
+        hifld = _to_albers(gpd.read_file(C.HIFLD_SUBSTATIONS_GPKG))
+        hid = "OBJECTID" if "OBJECTID" in hifld.columns else ("ID" if "ID" in hifld.columns else None)
+        if hid is not None:
+            hifld["substation_id"] = "HIFLD_" + hifld[hid].astype(str)
+            name_col = C.pick_column(hifld.columns, ("Name", "NAME", "Substation"))
+            hifld["substation_name"] = (
+                hifld[name_col].astype(str) if name_col else hifld["substation_id"]
+            )
+            hifld["source"] = "hifld"
+            frames.append(hifld[["substation_id", "substation_name", "source", "geometry"]])
+
+    gdf = pd.concat(frames, ignore_index=True)
+    gdf = gpd.GeoDataFrame(gdf, geometry="geometry", crs=C.CA_ALBERS_CRS)
+    gdf = gdf.drop_duplicates("substation_id")
+
+    missing = needed - set(gdf["substation_id"])
+    if missing:
+        extra = (
+            mapping[mapping["substation_id"].isin(missing)]
+            [["substation_id", "substation_name", "source"]]
+            .drop_duplicates("substation_id")
+        )
+        rows = []
+        for _, r in extra.iterrows():
+            rows.append(
+                {
+                    "substation_id": r["substation_id"],
+                    "substation_name": r.get("substation_name", r["substation_id"]),
+                    "source": r.get("source", "unknown"),
+                    "geometry": Point(0, 0),
+                }
+            )
+        gdf = pd.concat(
+            [gdf, gpd.GeoDataFrame(rows, geometry="geometry", crs=C.CA_ALBERS_CRS)],
+            ignore_index=True,
+        )
+        gdf = gpd.GeoDataFrame(gdf, geometry="geometry", crs=C.CA_ALBERS_CRS)
+
+    # Keep stations that appear in the TAZ map plus all GRIP stations (full PGE backbone)
+    keep = set(gdf.loc[gdf["source"] == "grip", "substation_id"]) | needed
+    gdf = gdf[gdf["substation_id"].isin(keep)].copy()
+    gdf = gdf.merge(rank, on="substation_id", how="left")
+    gdf["mean_week_kwh"] = gdf["mean_week_kwh"].fillna(0.0)
+    gdf["mean_peak_kW"] = gdf["mean_peak_kW"].fillna(0.0)
+    gdf["hub_id"] = gdf["substation_id"].map(lambda s: f"SUB_{s}")
+    return gdf
+
+
+def assign_parent_ba(hubs: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    wpath = C.MESO_DIR / "substation_weights.csv"
+    if wpath.is_file():
+        wdf = pd.read_csv(wpath)
+        wdf["substation_id"] = wdf["substation_id"].astype(str)
+        hubs = hubs.merge(wdf[["substation_id", "parent_ba", "w_s"]], on="substation_id", how="left")
+    ba_ll = {
+        "WEC_CALN": (-122.0, 38.0),
+        "WEC_BANC": (-121.5, 38.6),
+        "WECC_SCE": (-117.5, 34.0),
         "WEC_LADW": (-118.3, 34.1),
         "WEC_SDGE": (-117.1, 32.8),
         "WECC_IID": (-115.5, 33.0),
     }
-    return {k: Point(xy) for k, xy in coords.items()}
-
-
-def load_substations_with_load() -> gpd.GeoDataFrame:
-    grip = gpd.read_file(C.GRIP_ED_SUBSTATIONS).to_crs(26910)
-    grip["substation_id"] = grip["Substati00"].astype(str)
-    grip["substation_name"] = grip["Substation"].astype(str)
-    grip["source"] = "grip"
-
-    rank = pd.read_csv(C.MESO_DIR / "substation_ev_rank_mean.csv")
-    rank["substation_id"] = rank["substation_id"].astype(str)
-    gdf = grip.merge(
-        rank[["substation_id", "mean_week_kwh", "mean_peak_kW"]],
-        on="substation_id",
-        how="left",
-    )
-    gdf["mean_week_kwh"] = gdf["mean_week_kwh"].fillna(0.0)
-    gdf["mean_peak_kW"] = gdf["mean_peak_kW"].fillna(0.0)
-    keep = ["substation_id", "substation_name", "source", "mean_week_kwh", "mean_peak_kW", "geometry"]
-    gdf = gdf[keep].copy()
-
-    # Include BA gateway / external stations present in the TAZ map but not in GRIP
-    mapping = pd.read_csv(C.MAPPING_DIR / "taz_to_substation.csv")
-    mapping["substation_id"] = mapping["substation_id"].astype(str)
-    extra_ids = set(mapping["substation_id"]) - set(gdf["substation_id"])
-    if extra_ids:
-        from shapely.geometry import Point
-
-        meta = (
-            mapping[mapping["substation_id"].isin(extra_ids)]
-            [["substation_id", "substation_name", "source"]]
-            .drop_duplicates("substation_id")
-        )
-        # place gateways at BA centroids; others at (0,0) fallback then overwritten
-        ba_ll = {
-            "BA_GW_WEC_CALN": (-122.0, 38.0),
-            "BA_GW_WEC_BANC": (-121.5, 38.6),
-            "BA_GW_WECC_SCE": (-117.5, 34.0),
-            "BA_GW_WEC_LADW": (-118.3, 34.1),
-            "BA_GW_WEC_SDGE": (-117.1, 32.8),
-            "BA_GW_WECC_IID": (-115.5, 33.0),
-        }
-        rows = []
-        en = rank.set_index("substation_id")
-        for _, r in meta.iterrows():
-            sid = r["substation_id"]
-            lon, lat = ba_ll.get(sid, (-120.0, 37.0))
-            rows.append(
-                {
-                    "substation_id": sid,
-                    "substation_name": r["substation_name"],
-                    "source": r["source"],
-                    "mean_week_kwh": float(en["mean_week_kwh"].get(sid, 0.0))
-                    if sid in en.index
-                    else 0.0,
-                    "mean_peak_kW": float(en["mean_peak_kW"].get(sid, 0.0))
-                    if sid in en.index
-                    else 0.0,
-                    "geometry": Point(lon, lat),
-                }
-            )
-        extra = gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326").to_crs(26910)
-        gdf = pd.concat([gdf, extra[keep]], ignore_index=True)
-        gdf = gpd.GeoDataFrame(gdf, geometry="geometry", crs="EPSG:26910")
-        print(f"  added {len(extra)} non-GRIP stations (gateways/external)")
-
-    if C.HIFLD_SUBSTATIONS_GPKG.is_file():
-        hifld = gpd.read_file(C.HIFLD_SUBSTATIONS_GPKG).to_crs(26910)
-        id_col = "OBJECTID" if "OBJECTID" in hifld.columns else (
-            "ID" if "ID" in hifld.columns else None
-        )
-        if id_col is not None:
-            hifld["substation_id"] = "CEC_" + hifld[id_col].astype(str)
-            hifld = hifld[hifld["substation_id"].isin(extra_ids)].copy()
-            if len(hifld):
-                hifld["substation_name"] = hifld.get("Name", hifld["substation_id"]).astype(str)
-                hifld["source"] = "hifld"
-                hifld["mean_week_kwh"] = 0.0
-                hifld["mean_peak_kW"] = 0.0
-                gdf = pd.concat([gdf, hifld[keep]], ignore_index=True)
-                gdf = gpd.GeoDataFrame(gdf, geometry="geometry", crs="EPSG:26910")
-    return gdf
-
-
-def substations_as_nodes(gdf: gpd.GeoDataFrame) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
-    """1:1 — each substation is its own meso delivery node (abstract default)."""
-    out = gdf.copy()
-    out["hub_id"] = out["substation_id"].map(lambda s: f"SUB_{s}")
-    hub_rows = []
-    for _, r in out.iterrows():
-        hub_rows.append(
-            {
-                "hub_id": r["hub_id"],
-                "substation_id": r["substation_id"],
-                "substation_name": r.get("substation_name", ""),
-                "n_substations": 1,
-                "mean_week_kwh": float(r["mean_week_kwh"]),
-                "geometry": r.geometry,
-            }
-        )
-    hubs = gpd.GeoDataFrame(hub_rows, geometry="geometry", crs=gdf.crs)
-    return out, hubs
-
-
-def cluster_hubs(gdf: gpd.GeoDataFrame, n_hubs: int) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
-    """Optional k-means aggregation on projected coordinates."""
-    from sklearn.cluster import KMeans
-
-    xy = np.column_stack([gdf.geometry.x, gdf.geometry.y])
-    n_hubs = min(n_hubs, len(gdf))
-    km = KMeans(n_clusters=n_hubs, random_state=42, n_init=10)
-    labels = km.fit_predict(xy)
-    out = gdf.copy()
-    out["hub_id"] = [f"MESO_{i:03d}" for i in labels]
-    centers = km.cluster_centers_
-    hub_rows = []
-    for i in range(n_hubs):
-        members = out[out["hub_id"] == f"MESO_{i:03d}"]
-        hub_rows.append(
-            {
-                "hub_id": f"MESO_{i:03d}",
-                "n_substations": len(members),
-                "mean_week_kwh": float(members["mean_week_kwh"].sum()),
-                "geometry": Point(centers[i, 0], centers[i, 1]),
-            }
-        )
-    hubs = gpd.GeoDataFrame(hub_rows, geometry="geometry", crs=gdf.crs)
-    return out, hubs
-
-
-def assign_parent_ba(hubs: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    ba_pts = _ba_centroids()
     ba_gdf = gpd.GeoDataFrame(
-        {"parent_ba": list(ba_pts.keys()), "geometry": list(ba_pts.values())},
+        {"ba": list(ba_ll.keys()), "geometry": [Point(xy) for xy in ba_ll.values()]},
         crs="EPSG:4326",
     ).to_crs(hubs.crs)
-    joined = gpd.sjoin_nearest(hubs, ba_gdf[["parent_ba", "geometry"]], how="left")
-    joined = joined.drop(columns=[c for c in joined.columns if c.startswith("index_")])
-    # drop duplicate geometry cols if any
-    if "parent_ba" not in joined.columns:
-        raise RuntimeError("parent_ba assignment failed")
-    return joined.drop_duplicates(subset=["hub_id"])
+    miss = hubs["parent_ba"].isna() if "parent_ba" in hubs.columns else pd.Series(True, index=hubs.index)
+    if miss.any():
+        joined = gpd.sjoin_nearest(hubs.loc[miss], ba_gdf, how="left")
+        joined = joined.drop_duplicates("hub_id")
+        if "parent_ba" not in hubs.columns:
+            hubs["parent_ba"] = pd.NA
+        hubs.loc[miss, "parent_ba"] = joined["ba"].to_numpy()
+    hubs["parent_ba"] = hubs["parent_ba"].fillna("WEC_CALN")
+    if "w_s" not in hubs.columns:
+        hubs["w_s"] = 0.0
+    hubs["w_s"] = hubs["w_s"].fillna(0.0)
+    return hubs
+
+
+def _endpoint_points(geom):
+    if geom is None or geom.is_empty:
+        return None
+    if geom.geom_type == "LineString":
+        coords = list(geom.coords)
+    elif geom.geom_type == "MultiLineString":
+        coords = list(geom.geoms[0].coords)
+    else:
+        return None
+    if len(coords) < 2:
+        return None
+    return Point(coords[0]), Point(coords[-1])
 
 
 def build_edges(hubs: gpd.GeoDataFrame, lines: gpd.GeoDataFrame) -> pd.DataFrame:
-    """Snap each transmission line endpoints to nearest hubs; aggregate capacity."""
-    hubs = hubs.set_index("hub_id", drop=False)
-    # line endpoints
+    """Snap each line's endpoints to nearest substations; aggregate parallel capacity."""
+    hx = hubs.geometry.x.to_numpy()
+    hy = hubs.geometry.y.to_numpy()
+    ids = hubs["hub_id"].to_numpy()
     rows = []
     for _, ln in lines.iterrows():
-        geom = ln.geometry
-        if geom is None or geom.is_empty:
+        ends = _endpoint_points(ln.geometry)
+        if ends is None:
             continue
-        # use boundary coords
-        coords = list(geom.coords) if geom.geom_type == "LineString" else list(geom.geoms[0].coords)
-        if len(coords) < 2:
-            continue
-        a = Point(coords[0])
-        b = Point(coords[-1])
-        # nearest hubs
-        # quick: compute distances to all hubs (n_lines*n_hubs ~ 200k ok)
-        hx = hubs.geometry.x.to_numpy()
-        hy = hubs.geometry.y.to_numpy()
-        ids = hubs["hub_id"].to_numpy()
+        a, b = ends
         da = (hx - a.x) ** 2 + (hy - a.y) ** 2
         db = (hx - b.x) ** 2 + (hy - b.y) ** 2
         ia, ib = int(np.argmin(da)), int(np.argmin(db))
         if ia == ib:
             continue
-        cap = _kv_capacity_w(ln.get("RATEDKV", 115))
+        cap = C.line_limit_w(ln)
         u, v = sorted([ids[ia], ids[ib]])
-        rows.append({"source": u, "target": v, "installed_capacity_W": cap, "rated_kv": ln.get("RATEDKV")})
+        rows.append(
+            {
+                "source": u,
+                "target": v,
+                "installed_capacity_W": cap,
+                "rated_mva": cap / 1e6,
+                "rated_kv": ln.get("RATEDKV", ln.get("VOLTAGE", ln.get("KV"))),
+            }
+        )
     if not rows:
-        return pd.DataFrame(columns=["source", "target", "installed_capacity_W", "n_lines"])
+        return pd.DataFrame(
+            columns=["source", "target", "installed_capacity_W", "n_lines", "rated_mva"]
+        )
     ed = pd.DataFrame(rows)
-    agg = (
+    return (
         ed.groupby(["source", "target"], as_index=False)
-        .agg(installed_capacity_W=("installed_capacity_W", "sum"), n_lines=("rated_kv", "count"))
+        .agg(
+            installed_capacity_W=("installed_capacity_W", "sum"),
+            n_lines=("rated_mva", "count"),
+            rated_mva=("rated_mva", "sum"),
+        )
     )
-    return agg
 
 
-def aggregate_seasonal_loads(station_hub: gpd.GeoDataFrame) -> None:
-    mapping = pd.read_csv(C.MAPPING_DIR / "taz_to_substation.csv")
-    mapping["TAZ"] = mapping["TAZ"].astype(int)
-    mapping["substation_id"] = mapping["substation_id"].astype(str)
-    hub_map = station_hub[["substation_id", "hub_id"]].copy()
-    hub_map["substation_id"] = hub_map["substation_id"].astype(str)
-    mapping = mapping.merge(hub_map, on="substation_id", how="left")
-    taz_ids = np.load(C.MESO_DIR / "taz_ids.npy")
-    hubs_order = sorted(station_hub["hub_id"].unique())
-    hub_index = {h: i for i, h in enumerate(hubs_order)}
+def load_transmission_lines(hubs: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    C.require_file(C.GRIP_TRANSMISSION_LINES, hint="Need unzipped GRIP TransmissionLines.shp")
+    grip_lines = _to_albers(gpd.read_file(C.GRIP_TRANSMISSION_LINES))
+    grip_lines["line_source"] = "grip"
+    frames = [grip_lines]
+    if C.HIFLD_TX_LINES_GPKG.is_file():
+        extra = _to_albers(gpd.read_file(C.HIFLD_TX_LINES_GPKG))
+        extra["line_source"] = "hifld"
+        frames.append(extra)
+    else:
+        print("  HIFLD transmission lines cache missing; using GRIP lines only.")
+    return pd.concat(frames, ignore_index=True)
 
+
+def map_wecc_generators(hubs: gpd.GeoDataFrame) -> list[dict]:
+    path = C.resolve_wec_json()
+    with open(path, encoding="utf-8") as fh:
+        graph = json.load(fh)
+    recs = []
+    for node in graph["nodes"]:
+        ba = node.get("id")
+        if ba not in C.CALIFORNIA_REGIONS:
+            continue
+        for handle, asset in (node.get("assets") or {}).items():
+            cls = asset.get("_class")
+            if cls not in ("Producer", "Load", "Store"):
+                continue
+            if cls == "Load" and str(asset.get("type", "")).lower() == "load":
+                continue  # demand handled in 08_03
+            x, y = asset.get("x"), asset.get("y")
+            recs.append(
+                {
+                    "handle": handle,
+                    "parent_ba": ba,
+                    "class": cls,
+                    "type": asset.get("type"),
+                    "fuel": asset.get("fuel"),
+                    "installed_capacity": asset.get("installed_capacity"),
+                    "capex_capacity": asset.get("capex_capacity", 0),
+                    "lon": x,
+                    "lat": y,
+                    "optional": str(handle).startswith("optional_"),
+                    "profile_key": asset.get("profile") if isinstance(asset.get("profile"), str) else None,
+                }
+            )
+    if not recs:
+        return []
+    df = pd.DataFrame(recs)
+    has_xy = df["lon"].notna() & df["lat"].notna()
+    mapped = []
+    if has_xy.any():
+        gdf = gpd.GeoDataFrame(
+            df.loc[has_xy].copy(),
+            geometry=gpd.points_from_xy(df.loc[has_xy, "lon"], df.loc[has_xy, "lat"]),
+            crs="EPSG:4326",
+        ).to_crs(hubs.crs)
+        joined = gpd.sjoin_nearest(
+            gdf, hubs[["hub_id", "substation_id", "parent_ba", "geometry"]], how="left", distance_col="snap_m"
+        )
+        joined = joined.drop_duplicates(subset=["handle", "parent_ba"], keep="first")
+        for _, r in joined.iterrows():
+            mapped.append(
+                {
+                    "handle": r["handle"],
+                    "hub_id": r["hub_id"],
+                    "substation_id": r["substation_id"],
+                    "parent_ba": r["parent_ba_left"] if "parent_ba_left" in joined.columns else r["parent_ba"],
+                    "class": r["class"],
+                    "type": r["type"],
+                    "fuel": r["fuel"],
+                    "installed_capacity": r["installed_capacity"],
+                    "capex_capacity": r["capex_capacity"],
+                    "optional": bool(r["optional"]),
+                    "profile_key": r["profile_key"],
+                    "snap_m": float(r["snap_m"]) if pd.notna(r.get("snap_m")) else None,
+                }
+            )
+    # Assets without coordinates stay on the parent BA (optional solar/wind CAPEX)
+    for _, r in df.loc[~has_xy].iterrows():
+        mapped.append(
+            {
+                "handle": r["handle"],
+                "hub_id": None,
+                "substation_id": None,
+                "parent_ba": r["parent_ba"],
+                "class": r["class"],
+                "type": r["type"],
+                "fuel": r["fuel"],
+                "installed_capacity": r["installed_capacity"],
+                "capex_capacity": r["capex_capacity"],
+                "optional": bool(r["optional"]),
+                "profile_key": r["profile_key"],
+                "snap_m": None,
+            }
+        )
+    print(f"  mapped {sum(1 for m in mapped if m['hub_id'])} CA assets to substations; "
+          f"{sum(1 for m in mapped if m['hub_id'] is None)} remain on parent BA")
+    return mapped
+
+
+def map_interties(hubs: gpd.GeoDataFrame) -> list[dict]:
+    rows = []
+    pts = gpd.GeoDataFrame(
+        [
+            {"intertie_id": k, **v, "geometry": Point(v["lon"], v["lat"])}
+            for k, v in C.INTERTIE_POINTS.items()
+        ],
+        geometry="geometry",
+        crs="EPSG:4326",
+    ).to_crs(hubs.crs)
+    joined = gpd.sjoin_nearest(
+        pts, hubs[["hub_id", "substation_id", "geometry"]], how="left", distance_col="snap_m"
+    )
+    joined = joined.drop_duplicates("intertie_id")
+    for _, r in joined.iterrows():
+        rows.append(
+            {
+                "intertie_id": r["intertie_id"],
+                "path": r["path"],
+                "parent_ba": r["parent_ba"],
+                "remote_ba": r["remote_ba"],
+                "hub_id": r["hub_id"],
+                "substation_id": r["substation_id"],
+                "snap_m": float(r["snap_m"]) if pd.notna(r.get("snap_m")) else None,
+            }
+        )
+    return rows
+
+
+def candidate_bess(hubs: gpd.GeoDataFrame) -> list[dict]:
+    """Every substation with EV peak > 0 is a BESS candidate (S2)."""
+    out = []
+    for _, r in hubs.iterrows():
+        peak_kw = float(r.get("mean_peak_kW") or 0.0)
+        if peak_kw <= 0:
+            continue
+        out.append(
+            {
+                "hub_id": r["hub_id"],
+                "substation_id": r["substation_id"],
+                "capex_capacity_W": max(peak_kw * 1000.0 * 0.5, 1e6),
+                "duration_h": 4.0,
+            }
+        )
+    return out
+
+
+def connected_component_gateways(hubs: gpd.GeoDataFrame, edges: pd.DataFrame) -> pd.DataFrame:
+    """One BA↔substation interface per connected component (plus isolates)."""
+    import networkx as nx
+
+    g = nx.Graph()
+    g.add_nodes_from(hubs["hub_id"].tolist())
+    for _, e in edges.iterrows():
+        g.add_edge(e["source"], e["target"])
+    hubs_ix = hubs.set_index("hub_id")
+    rows = []
+    for comp in nx.connected_components(g):
+        members = hubs_ix.loc[list(comp)]
+        # pick the bus with largest EV energy in each component as the gateway
+        gw = members["mean_week_kwh"].idxmax() if "mean_week_kwh" in members else members.index[0]
+        ba = members.loc[gw, "parent_ba"]
+        # interface capacity: 2× component mean kW, floor 50 MW
+        mean_kw = float(members["mean_week_kwh"].sum()) / (7 * 24) if "mean_week_kwh" in members else 50e3
+        cap_w = max(50e6, mean_kw * 1e3 * 2.0)
+        rows.append(
+            {
+                "hub_id": gw,
+                "parent_ba": ba,
+                "interface_capacity_W": cap_w,
+                "n_substations": len(members),
+                "role": "component_gateway",
+            }
+        )
+    # Isolates already included. Also attach named intertie hubs if missing.
+    return pd.DataFrame(rows)
+
+
+def write_seasonal_hub_loads(hubs: gpd.GeoDataFrame) -> None:
+    hub_ids = hubs["hub_id"].tolist()
+    sub_to_hub = dict(zip(hubs["substation_id"].astype(str), hubs["hub_id"]))
     for week in C.SEASONAL_WEEKS:
         name = week["name"]
-        taz_hourly = np.load(C.MESO_DIR / "seasonal" / name / "taz_hourly_kW.npy")
-        sub_for_taz = (
-            mapping.set_index("TAZ").loc[taz_ids, "hub_id"].to_numpy()
-        )
-        meso = np.zeros((len(hubs_order), taz_hourly.shape[1]), dtype=np.float64)
-        for ti, hid in enumerate(sub_for_taz):
-            if pd.isna(hid):
+        wdir = C.MESO_DIR / "seasonal" / name
+        sid_path = wdir / "substation_ids.npy"
+        ev_path = wdir / "substation_hourly_kW.npy"
+        tot_path = wdir / "substation_hourly_total_kW.npy"
+        if not (sid_path.is_file() and ev_path.is_file()):
+            print(f"  skip seasonal load {name}: missing 08_03 outputs")
+            continue
+        sids = np.load(sid_path, allow_pickle=True).astype(str)
+        ev = np.load(ev_path)
+        tot = np.load(tot_path) if tot_path.is_file() else ev
+        meso_ev = np.zeros((len(hub_ids), ev.shape[1]), dtype=np.float32)
+        meso_tot = np.zeros_like(meso_ev)
+        hub_index = {h: i for i, h in enumerate(hub_ids)}
+        for i, sid in enumerate(sids):
+            hid = sub_to_hub.get(sid)
+            if hid is None:
                 continue
-            meso[hub_index[hid]] += taz_hourly[ti]
-        wdir = C.ensure_dir(C.MESO_DIR / "seasonal" / name)
-        np.save(wdir / "meso_hub_ids.npy", np.array(hubs_order))
-        np.save(wdir / "meso_hourly_kW.npy", meso.astype(np.float32))
-        print(f"  {name}: meso load peak={meso.sum(0).max()/1e6:.2f} GW across {len(hubs_order)} hubs")
+            meso_ev[hub_index[hid]] += ev[i]
+            meso_tot[hub_index[hid]] += tot[i]
+        np.save(wdir / "meso_hub_ids.npy", np.array(hub_ids))
+        np.save(wdir / "meso_hourly_kW.npy", meso_ev)
+        np.save(wdir / "meso_hourly_total_kW.npy", meso_tot)
+        print(f"  {name}: EV peak={meso_ev.sum(0).max()/1e6:.2f} GW  total peak={meso_tot.sum(0).max()/1e6:.2f} GW")
+
+
+def cluster_hubs(gdf: gpd.GeoDataFrame, n_hubs: int) -> gpd.GeoDataFrame:
+    from sklearn.cluster import KMeans
+
+    xy = np.column_stack([gdf.geometry.x, gdf.geometry.y])
+    n_hubs = min(n_hubs, len(gdf))
+    labels = KMeans(n_clusters=n_hubs, random_state=42, n_init=10).fit_predict(xy)
+    out = gdf.copy()
+    out["hub_id"] = [f"MESO_{i:03d}" for i in labels]
+    return out
 
 
 def main(aggregate: int | None = None) -> None:
-    print("Loading substations + EV ranking...")
-    stations = load_substations_with_load()
-    print(f"  {len(stations)} stations")
-
-    if aggregate is None or aggregate <= 0 or aggregate >= len(stations):
-        print(f"Using substation-level nodes (n={len(stations)}; no clustering)...")
-        station_hub, hubs = substations_as_nodes(stations)
-    else:
-        print(f"Aggregating into {aggregate} hubs (k-means)...")
+    print("Loading unclustered substation nodes...")
+    stations = load_substation_nodes()
+    if aggregate and 0 < aggregate < len(stations):
+        print(f"WARNING: --aggregate {aggregate} is a screening option; ASTR2026 default is unclustered.")
         try:
-            station_hub, hubs = cluster_hubs(stations, aggregate)
+            stations = cluster_hubs(stations, aggregate)
         except ImportError:
-            print("sklearn not available — using grid quantile bins instead")
-            n = int(np.sqrt(aggregate))
-            xs = pd.qcut(stations.geometry.x, q=n, labels=False, duplicates="drop")
-            ys = pd.qcut(stations.geometry.y, q=n, labels=False, duplicates="drop")
-            station_hub = stations.copy()
-            station_hub["hub_id"] = [f"MESO_{int(a):02d}{int(b):02d}" for a, b in zip(xs, ys)]
-            hub_rows = []
-            for hid, g in station_hub.groupby("hub_id"):
-                hub_rows.append(
-                    {
-                        "hub_id": hid,
-                        "n_substations": len(g),
-                        "mean_week_kwh": float(g["mean_week_kwh"].sum()),
-                        "geometry": Point(g.geometry.x.mean(), g.geometry.y.mean()),
-                    }
-                )
-            hubs = gpd.GeoDataFrame(hub_rows, geometry="geometry", crs=stations.crs)
+            print("sklearn missing; ignoring --aggregate")
+    else:
+        print(f"Using substation-level nodes (n={len(stations)}; no clustering)")
 
-    hubs = assign_parent_ba(hubs)
+    hubs = assign_parent_ba(stations)
+    hubs = hubs.reset_index(drop=True)
     print(hubs["parent_ba"].value_counts().to_string())
 
-    print("Building edges from GRIP TransmissionLines...")
-    lines = gpd.read_file(C.GRIP_TRANSMISSION_LINES).to_crs(hubs.crs)
+    print("Building edges from TransmissionLines.shp (voltage / MVA heuristics)...")
+    lines = load_transmission_lines(hubs)
     edges = build_edges(hubs, lines)
-    print(f"  {len(edges)} aggregated hub-hub corridors")
+    print(f"  {len(edges)} aggregated corridors")
+
+    print("Spatial join: WECC CA generators / storage → nearest substation...")
+    generators = map_wecc_generators(hubs)
+    print("Snapping named interties (Path 15 / 26 / 66 / Palo Verde)...")
+    interties = map_interties(hubs)
+    bess = candidate_bess(hubs)
+    interfaces = connected_component_gateways(hubs, edges)
+    # ensure named intertie hubs also have BA interfaces
+    have = set(zip(interfaces["hub_id"], interfaces["parent_ba"])) if len(interfaces) else set()
+    extra_iface = []
+    for it in interties:
+        key = (it["hub_id"], it["parent_ba"])
+        if key not in have:
+            extra_iface.append(
+                {
+                    "hub_id": it["hub_id"],
+                    "parent_ba": it["parent_ba"],
+                    "interface_capacity_W": 500e6,
+                    "n_substations": 1,
+                    "role": f"intertie:{it['intertie_id']}",
+                }
+            )
+            have.add(key)
+    if extra_iface:
+        interfaces = pd.concat([interfaces, pd.DataFrame(extra_iface)], ignore_index=True)
 
     C.ensure_dir(C.MESO_DIR)
     hubs.drop(columns=["geometry"]).to_csv(C.MESO_DIR / "meso_nodes.csv", index=False)
     edges.to_csv(C.MESO_DIR / "meso_edges.csv", index=False)
     hubs.to_file(C.MESO_DIR / "meso_hubs.gpkg", driver="GPKG")
-    station_hub.drop(columns=["geometry"]).to_csv(
-        C.MESO_DIR / "substation_to_hub.csv", index=False
-    )
-    meta = {
-        "resolution": "substation" if hubs["n_substations"].max() == 1 else "aggregated",
+    interfaces.to_csv(C.MESO_DIR / "meso_ba_interfaces.csv", index=False)
+    stations[["substation_id", "hub_id"]].to_csv(C.MESO_DIR / "substation_to_hub.csv", index=False)
+
+    ll = hubs.to_crs(4326)
+    network = {
+        "crs": C.CA_ALBERS_CRS,
+        "resolution": "substation" if hubs["hub_id"].str.startswith("SUB_").all() else "aggregated",
         "n_nodes": int(len(hubs)),
-        "aggregate_requested": aggregate,
+        "n_edges": int(len(edges)),
+        "voltage_heuristics_mva": C.KV_TO_MVA,
+        "nodes": [
+            {
+                "hub_id": r.hub_id,
+                "substation_id": r.substation_id,
+                "substation_name": r.substation_name,
+                "source": r.source,
+                "parent_ba": r.parent_ba,
+                "w_s": float(r.w_s),
+                "lon": float(ll.geometry.iloc[i].x),
+                "lat": float(ll.geometry.iloc[i].y),
+            }
+            for i, r in enumerate(hubs.itertuples())
+        ],
+        "edges": edges.to_dict(orient="records"),
+        "generators": generators,
+        "bess_candidates": bess,
+        "interties": interties,
+        "ba_interfaces": interfaces.to_dict(orient="records"),
     }
+    with open(C.CA_NETWORK_JSON, "w", encoding="utf-8") as fh:
+        json.dump(network, fh)
     (C.MESO_DIR / "meso_resolution.json").write_text(
-        __import__("json").dumps(meta, indent=2), encoding="utf-8"
+        json.dumps({"resolution": network["resolution"], "n_nodes": network["n_nodes"]}, indent=2),
+        encoding="utf-8",
     )
+    print(f"Wrote {C.CA_NETWORK_JSON} (nodes={network['n_nodes']}, edges={network['n_edges']})")
 
-    print("Aggregating seasonal EV loads to hubs...")
-    # need hub_id on stations used in mapping — remap via substation
-    aggregate_seasonal_loads(station_hub)
-
-    # interface capacity parent BA ↔ hub: proportional to hub peak EV
-    iface = hubs[["hub_id", "parent_ba", "mean_week_kwh"]].copy()
-    # default interface MW: max(50, peak-related)
-    iface["interface_capacity_W"] = np.maximum(
-        50e6, iface["mean_week_kwh"] / (7 * 24) * 1e3 * 2.0
-    )  # rough: 2x mean kW → W
-    iface.to_csv(C.MESO_DIR / "meso_ba_interfaces.csv", index=False)
-    print(f"Wrote meso artifacts under {C.MESO_DIR} ({meta['resolution']}, n={meta['n_nodes']})")
+    print("Aggregating seasonal loads onto substation nodes...")
+    write_seasonal_hub_loads(hubs)
+    print(f"Wrote meso artifacts under {C.MESO_DIR}")
 
 
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    parser = argparse.ArgumentParser(description="Build CA meso / substation delivery layer")
+    parser = argparse.ArgumentParser(description="Build unclustered CA substation network")
     parser.add_argument(
         "--aggregate",
         type=int,
         default=None,
-        help="If set (e.g. 80), k-means-aggregate substations into N hubs; "
-        "default is one node per substation",
+        help="Screening only. ASTR2026 default is one node per substation.",
     )
-    args = parser.parse_args()
-    main(aggregate=args.aggregate)
+    main(aggregate=parser.parse_args().aggregate)
