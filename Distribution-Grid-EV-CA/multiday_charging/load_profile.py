@@ -81,3 +81,35 @@ def grouped_daily_hourly(
     for gv, grp in sessions.groupby(group_col):
         out[gv] = daily_hourly_matrix(grp, n_days, power_col)
     return out
+
+
+def scale_fleet_shape_by_zone_weights(
+    fleet_daily_hourly: np.ndarray,
+    zone_weights: np.ndarray,
+) -> np.ndarray:
+    """Allocate a fleet ``[n_days, 24]`` kW shape across zones by weight share.
+
+    Parameters
+    ----------
+    fleet_daily_hourly
+        Shape ``[n_days, 24]`` total fleet load (kW).
+    zone_weights
+        Non-negative weights of length ``n_zones`` (e.g. annual TAZ kWh).
+        Zero-total weights yield an all-zero result.
+
+    Returns
+    -------
+    np.ndarray
+        Array of shape ``[n_zones, n_days, 24]`` where each zone's slice is
+        ``fleet_daily_hourly * (w_z / sum(w))``.
+    """
+    load = np.asarray(fleet_daily_hourly, dtype=float)
+    w = np.asarray(zone_weights, dtype=float).reshape(-1)
+    if load.ndim != 2 or load.shape[1] != 24:
+        raise ValueError(f"fleet_daily_hourly must be [n_days, 24], got {load.shape}")
+    total = w.sum()
+    if total <= 0 or not np.isfinite(total):
+        return np.zeros((w.size, load.shape[0], 24), dtype=float)
+    shares = w / total
+    # (n_zones, 1, 1) * (1, n_days, 24)
+    return shares[:, None, None] * load[None, :, :]

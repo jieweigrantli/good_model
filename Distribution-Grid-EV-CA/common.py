@@ -19,10 +19,80 @@ from __future__ import annotations
 import glob
 import os
 import pickle
+from pathlib import Path
 from typing import Iterable
 
 import numpy as np
 import pandas as pd
+
+# ---------------------------------------------------------------------------
+# Project roots / ASTR–GRIP paths
+# ---------------------------------------------------------------------------
+
+# Directory containing this module (Distribution-Grid-EV-CA/)
+PKG_DIR = Path(__file__).resolve().parent
+DATA_DIR = PKG_DIR / "data"
+REPO_ROOT = PKG_DIR.parent
+
+# Nested unzip layout from PG&E GRIP Shape download
+GRIP_SHP_DIR = DATA_DIR / "GRIP_SHP" / "GRIP_SHP" / "GRIP_SHP" / "GRIP_SHP"
+
+GRIP_ED_SUBSTATIONS = GRIP_SHP_DIR / "EDSubstations.shp"
+GRIP_TRANSMISSION_LINES = GRIP_SHP_DIR / "TransmissionLines.shp"
+GRIP_FEEDER_DETAIL = GRIP_SHP_DIR / "FeederDetail.shp"
+GRIP_SUBSTATION_LOAD_PROFILE = GRIP_SHP_DIR / "SubstationLoadProfile.shp"
+GRIP_FEEDER_LOAD_PROFILE = GRIP_SHP_DIR / "FeederLoadProfile.shp"
+
+TAZ_CENTROID_GPKG = DATA_DIR / "shps" / "TAZ_centroid_sf.gpkg"
+MULTIDAY_OUTPUT_DIR = PKG_DIR / "multiday_charging" / "outputs"
+TAZ_TOTAL_DEMAND_CSV = MULTIDAY_OUTPUT_DIR / "taz_total_demand_kwh.csv"
+FLEET_DAILY_HOURLY_NPY = MULTIDAY_OUTPUT_DIR / "daily_hourly_load_kW.npy"
+
+MAPPING_DIR = DATA_DIR / "mapping"
+MESO_DIR = DATA_DIR / "meso"
+FIGURES_ASTR_DIR = PKG_DIR / "figures" / "ASTR_diagnostics"
+ASTR_RESULTS_DIR = PKG_DIR / "astr_meso_results"
+
+# HIFLD Electric Substations cache (downloaded by 08_01 if missing)
+HIFLD_SUBSTATIONS_GPKG = DATA_DIR / "hifld" / "electric_substations_ca.gpkg"
+
+
+def is_meso_delivery_node(node_id: str) -> bool:
+    """True for nested CA delivery nodes (SUB_* substations or aggregated MESO_*)."""
+    s = str(node_id)
+    return s.startswith("SUB_") or s.startswith("MESO_")
+
+
+CALIFORNIA_REGIONS = [
+    "WEC_BANC",
+    "WEC_CALN",
+    "WEC_LADW",
+    "WEC_SDGE",
+    "WECC_IID",
+    "WECC_SCE",
+]
+
+# Seasonal week windows (hour-of-year start), matching ev_charging_project/config.py
+SEASONAL_WEEKS = [
+    {"name": "march", "start_hour": 1416, "month": "March"},
+    {"name": "june", "start_hour": 3624, "month": "June"},
+    {"name": "september", "start_hour": 5832, "month": "September"},
+    {"name": "december", "start_hour": 8016, "month": "December"},
+]
+NUM_HOURS_WEEK = 7 * 24
+
+
+def grip_layer(name: str) -> Path:
+    """Return path to a GRIP shapefile layer by basename (with or without .shp)."""
+    if not name.lower().endswith(".shp"):
+        name = f"{name}.shp"
+    return GRIP_SHP_DIR / name
+
+
+def ensure_dir(path: Path | str) -> Path:
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 # ---------------------------------------------------------------------------

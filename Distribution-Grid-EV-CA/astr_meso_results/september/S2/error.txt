@@ -1,0 +1,14 @@
+Traceback (most recent call last):
+  File "E:\GitHub\good_model\Distribution-Grid-EV-CA\10_01_run_scenarios_S0_S3.py", line 275, in run_season
+    solution, obj = _solve_graph(g, policies, network_kw, solver_kw, f"{name}-{scen}")
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\GitHub\good_model\Distribution-Grid-EV-CA\10_01_run_scenarios_S0_S3.py", line 113, in _solve_graph
+    network.solve(**solver_kw)
+  File "E:\GitHub\good_model\good\optimization\network.py", line 285, in solve
+    self.result = solver.solve(self.model, tee = tee)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Grant\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\pyomo\opt\base\solvers.py", line 688, in solve
+    _model.solutions.load_from(
+  File "C:\Users\Grant\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\pyomo\core\base\PyomoModel.py", line 231, in load_from
+    raise ValueError(
+ValueError: Cannot load a SolverResults object with bad status: aborted

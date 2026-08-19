@@ -1,0 +1,121 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true, linkcolor=black, urlcolor=blue, citecolor=black}
+\setlength{\textfloatsep}{8pt plus 2pt minus 2pt}
+\setlength{\floatsep}{8pt plus 2pt minus 2pt}
+\setlength{\intextsep}{8pt plus 2pt minus 2pt}
+\setlength{\abovecaptionskip}{4pt}
+\setlength{\belowcaptionskip}{2pt}
+
+\title{\vspace{-1.25em}Transmission Bottlenecks and Battery Storage Mitigation for Spatially Clustered EV Charging: A California Case Study}
+\author{Jiewei Grant Li$^{1,*}$, Alan Jenn$^{1}$\\
+\small $^1$Institute of Transportation Studies, University of California, Davis\\
+\small $^*$Corresponding author: jwgli@ucdavis.edu}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{1. Motivation and Research Question}
+
+Electric vehicles (EVs) can reduce direct transportation emissions, but the associated charging demand must be delivered through a power system with finite generation, storage, and transmission capacity. Well-to-wheel and life-cycle studies show that EV climate benefits depend on the upstream electricity supply rather than tailpipe emissions alone \cite{hawkins_comparative_2013,tamayao_regional_2015,challa_well--wheel_2022}. Average grid-emission factors are insufficient when charging load changes marginal generation, renewable curtailment, and power transfers across constrained networks \cite{ambrose_trends_2020,burton_data-driven_2023}.
+
+A balancing-area consequential-emissions framework can identify how EV charging changes generation, storage, and inter-regional exchange. However, aggregate regional modeling can hide an important operational mechanism: EV charging is spatially clustered, while clean generation is often remote. When transmission corridors or local delivery interfaces bind, low-carbon imports can be curtailed and local fossil generation may be dispatched out of merit \cite{bird_wind_2016,ahmed_grid_2020}. This study aims to quantify how much of the consequential emissions from EV charging is attributable to transmission bottlenecks, and can strategically located battery energy storage systems (BESS) reduce this congestion-related emissions.
+
+\section*{2. Background and Contribution}
+
+Prior EV-grid studies increasingly combine empirical charging profiles with dispatch or capacity-expansion models to estimate marginal power-sector impacts \cite{powell_scalable_2022,jenn_environmental_2020,jenn_emissions_2023,bruchon_cleaning_2024}. Storage has also been proposed as a mitigation resource for charging-related grid stress because it can shift renewable generation into high-demand charging periods and reduce dependence on constrained imports \cite{mowry_grid_2021,nagarajan_value_2018,ziegler_storage_2019,sihvonen_techno-socio-economic_2025}. Yet the emissions value of storage depends on where it is connected and whether it relieves a binding delivery constraint rather than merely shifting energy temporally.
+
+The contribution of this extended abstract is a two-layer EV-grid modeling framework. The first layer uses a balancing-area Grid Optimized Operation Dispatch (GOOD) model to estimate consequential generation and capacity expansion across the Western Electricity Coordinating Council (WECC). The second layer allocates California charging demand to transportation analysis zones (TAZs), maps TAZ centroids to nearby substations, and represents a local transmission network within California. The proposed model evaluates three counterfactuals: no EV charging, EV charging without new BESS, and EV charging with endogenous BESS deployment. The key output is a congestion-emissions penalty: the difference between EV-attributable emissions under constrained delivery and a relaxed-transfer benchmark.
+
+\section*{3. Data and Methods}
+
+\subsection*{EV Charging Demand}
+
+The EV charging demand module builds from a charging simulation model, considering travel demand, multi-day charging schedule, state of charge (SOC), fleet composition, and 
+the multi-day SOC-aware charging simulation. Vehicles are assigned heterogeneous battery capacities, daily vehicle miles traveled, home/work charging access, and charging-frequency preferences according to empirical data distributions. The energy demand accumulates over multiple days and the charge is triggered when the accumulated demand approaches usable battery capacity or when a preferred charging interval is reached. Each event is matched to an empirical charging-session pool by location type, charger level or housing type, and energy bin; the empirical session supplies start hour, end hour, power, and energy.
+
+The California aggregate case uses approximately 2.5 million light-duty EVs, 35 miles/day, 0.3 kWh/mile, and charging-energy shares of 68\% residential L1/L2, 4\% workplace L2, 8\% public L2, and 20\% DC fast charging \cite{nrel_2030charging}. Annual or representative-week charging energy is also accumulated by TAZ. Home charging is assigned to the vehicle's home TAZ, while work and public charging are assigned using destination proxies until trip-level destinations are fully integrated. The aggregate balancing-area charging curve is therefore preserved, but a second spatial allocation layer disaggregates it within California.
+
+For the meso-grid layer, each TAZ $i$ is represented by its geographic centroid $c_i$. Each centroid is assigned to the nearest candidate substation $s$ using great-circle or projected network distance:
+\[
+s(i)=\arg\min_{s\in S} dist(c_i,c_s).
+\]
+Hourly EV demand at each substation is then:
+\[
+L^{EV}_{s,t}=\sum_{i:s(i)=s} L^{EV}_{i,t}.
+\]
+This nearest-substation rule is a screening proxy rather than a feeder-boundary model. If utility service territories, feeder maps, or substation service polygons become available, they will replace the nearest-centroid assignment. Supply-side resources are mapped consistently: California generators, imports, and storage candidates are connected either to their observed grid node when location data are available or to the nearest meso-grid substation/interconnection proxy. This creates a second California delivery layer nested within the broader balancing-area dispatch model.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.8\linewidth]{image/ev_load_daily_curve_by_type.png}
+  \caption{\footnotesize Empirical-session-based EV charging profiles by charger category and day type. These profiles provide the temporal load shape for the transmission-constrained GOOD model.}
+  \label{fig:ev-load}
+\end{figure}
+
+\subsection*{GOOD and Transmission-Constrained Extension}
+
+The optimization framework minimizes total electricity network expenditures—encompassing operational costs, strategic capital investments, and heavily penalized soft-constraint slacks for shortfall, wastage, and policy noncompliance—by solving the following objective function:
+\begin{equation} \label{eq:objective}
+\begin{split}
+\min_{X, Z} \quad & \sum_{t \in T}\sum_{r \in R} \left(c^{sr}_t x^{sr}_{t} + c^{wr}_t x^{wr}_{t}\right) + \sum_{t \in T}\sum_{p \in P} c^{cp} x^{cp}_t \\
+& + \sum_{t \in T}\sum_{r \in R}\sum_{a \in \Theta(A, r)} \left(c^{ga}_t x^{ga}_t - c^{ea}_t x^{ea}_t \right) + \sum_{t \in T}\sum_{(i, j) \in E}\sum_{\lambda \in \Psi(\Lambda, i, j)} c^{t\lambda}_t x^{t\lambda}_t \\
+& + \sum_{r \in R}\sum_{a \in \Theta(A, r)} c^{ia} z^{ia} + \sum_{(i, j) \in E}\sum_{\lambda \in \Psi(\Lambda, i, j)} c^{i\lambda} z^{i\lambda}
+\end{split}
+\end{equation}
+where $T$, $R$, and $P$ represent the sets of time steps $t$, regions $r$, and policies $p$, while $\Theta(A, r)$ and $\Psi(\Lambda, i, j)$ define the assets $a$ and transmission lines $\lambda$ across network edges $E$. The operational decision variables $X$ balance regional shortfall ($x^{sr}_t$), wastage ($x^{wr}_t$), compliance slacks ($x^{cp}_t$), gross generation ($x^{ga}_t$), consumption ($x^{ea}_t$), and transmission line flows ($x^{t\lambda}_t$), while strategic variables $Z$ dictate asset ($z^{ia}$) and line ($z^{i\lambda}$) capacity expansion according to unit cost and penalty parameters $c$. This formulation is solved subject to fundamental operational constraints: regional network power balance, policy targets (e.g., Renewables Portfolio Standards), producer limits (installed capacities and maximum ramp rates), non-dispatchable load profiles, transmission capacity limits, and energy storage inventory bounds ($SOC_{b,t} = SOC_{b,t-1} + \eta_c c^{BESS}_{b,t} - d^{BESS}_{b,t}/\eta_d$). To isolate consequential impacts, a directional capacity floor constraint ($z^{ia|EV} \geq z^{ia|Base} \ \forall a \in \{\text{solar, wind, storage}\}$) prevents baseline capacity additions from being replaced, ensuring any new infrastructure is strictly attributable to the introduced EV load. Total consequential emissions ($\Delta E$) are subsequently quantified by multiplying the resulting hourly generation deltas by plant-specific operational carbon intensities ($EF_a$), formalized as $\Delta E = \sum_{t \in T} \sum_{r \in R} \sum_{a \in \Theta(A, r)} \left( x^{ga|EV}_{t,a} - x^{ga|Base}_{t,a} \right) \cdot EF_a$.
+
+To expand this balancing-area logic across the WECC network and insert the California substation layer for meso-grid analysis, a simplified DC-flow formulation is appended:
+\[
+f_{\ell,t}=b_{\ell}(\theta_{i,t}-\theta_{j,t}),
+\]
+\[
+-\bar F_{\ell}-z^T_{\ell} \leq f_{\ell,t} \leq \bar F_{\ell}+z^T_{\ell},
+\]
+where $f_{\ell,t}$ is line flow, $b_{\ell}$ is susceptance, $\theta_{i,t}$ and $\theta_{j,t}$ are voltage angles, $\bar F_{\ell}$ is existing transfer capacity, and $z^T_{\ell}$ is optional line expansion.
+
+At the balancing-area level, $n$ denotes regional GOOD nodes. Within California, $n$ can also denote substation-level meso-grid nodes produced by the TAZ-to-substation assignment. Nodal power balance is:
+\[
+\sum_{a\in A_n}g_{a,t}+\sum_{b\in B_n}d^{BESS}_{b,t}+u_{n,t}
++\sum_{\ell\in In(n)}f_{\ell,t}
+= L^{base}_{n,t}+L^{EV}_{n,t}
++\sum_{b\in B_n}c^{BESS}_{b,t}
++\sum_{\ell\in Out(n)}f_{\ell,t}+w_{n,t},
+\]
+where $g_{a,t}$ is generation, $L^{EV}_{n,t}$ is mapped EV charging load, $c^{BESS}_{b,t}$ and $d^{BESS}_{b,t}$ are storage charging and discharging, $u_{n,t}$ is unmet-load slack, and $w_{n,t}$ is renewable wastage or curtailment.
+
+The primary scenarios are: S0 baseline without EV load; S1 EV load with constrained balancing-area and California meso-grid transmission and no new BESS; S2 EV load with constrained delivery and endogenous BESS; and S3 EV load with relaxed delivery limits. The congestion-emissions penalty is:
+\[
+P_{cong}=(E_{S1}-E_{S0})-(E_{S3}-E_{S0}),
+\]
+and BESS mitigation is:
+\[
+M_{BESS}=(E_{S1}-E_{S0})-(E_{S2}-E_{S0}).
+\]
+
+The experiment is staged to remain computationally feasible. First, existing balancing-area GOOD runs identify seasons, hours, and regions where EV charging most strongly changes dispatch or capacity expansion. Second, the TAZ-to-substation layer is used to identify California substations with high EV load concentration and likely delivery stress. Third, the constrained model is run for representative weeks and candidate network aggregations before extending the most policy-relevant cases to a longer chronology. The reporting metrics are comparable across stages: top substations by EV charging load, binding line-hours, congestion shadow prices, renewable curtailment, fossil generation delta, BESS power and energy capacity, and emissions per kWh of EV charging.
+
+\section*{4. Preliminary Results}
+
+The transmission-constrained model is in progress. Preliminary balancing-area runs provide two pieces of evidence for the proposed extension. First, the charging-load generator produces structured diurnal demand, with residential evening charging and workplace/public daytime components (Fig.~\ref{fig:ev-load}). Second, representative-week GOOD runs indicate that EV load changes consequential generation and capacity-expansion choices. Natural gas is frequently dispatched to meet induced charging demand, while optimized renewable and BESS capacity varies across representative weeks. These results motivate the local transmission level step: the same aggregate EV load can have different emissions consequences depending on whether it is concentrated near substations with sufficient clean delivery capacity or near transmission bottlenecks.
+
+Before the final paper, the model will report a map or table of TAZ-to-substation EV load concentration, the substations and interfaces with the most binding hours, renewable curtailment behind constrained paths, local fossil generation deltas, BESS siting and duration, and the percentage of $P_{cong}$ closed by storage. Behavioral uncertainty will be bounded using proxy-ranked charging profiles: stochastic EV load profiles are scored by baseline marginal-emission exposure, and low-, median-, and high-score profiles are evaluated in the constrained model when computation allows.
+
+\section*{5. Implications}
+
+The proposed framework distinguishes temporal emissions from delivery-constrained emissions. If BESS reduces emissions primarily by charging during renewable-rich hours and discharging during evening EV demand, storage value is temporal. If BESS reduces the gap between constrained and relaxed-transmission cases, it directly mitigates congestion-related emissions. This distinction matters for planning because managed charging, renewable expansion, BESS deployment, and transmission upgrades target different mechanisms. This study proposes a transmission-constrained EV-grid emissions analysis framework that aims to quantify congestion-emissions penalty and a direct estimate of how much strategically deployed storage can preserve the climate benefits of EV charging under constrained power delivery.
+
+\newpage
+\begingroup
+\footnotesize
+\bibliographystyle{ieeetr}
+\bibliography{ch3_transmission_refs}
+\endgroup
+
+\end{document}
