@@ -280,11 +280,29 @@ class Network:
 
         self.model.dual = pyomo.Suffix(direction = pyomo.Suffix.IMPORT)
 
-        # Building and solving as a linear problem
+        # Building and solving as a linear problem. load_solutions=False so we
+        # can inspect the termination condition ourselves before Pyomo raises
+        # on a non-loadable status (e.g. 'aborted' from a hit TimeLimit).
         t0 = time.time()
-        self.result = solver.solve(self.model, tee = tee)
+        self.result = solver.solve(self.model, tee = tee, load_solutions = False)
         cprint(f'Problem Solved: {time.time() - t0}', self.verbose)
-        
+
+        term = self.result.solver.termination_condition
+        status = self.result.solver.status
+        cprint(f'Solver status: {status}; termination condition: {term}', self.verbose)
+
+        # Mirrors the gate Pyomo's own model.solutions.load_from() applies
+        # (it raises ValueError('bad status: aborted') on anything but
+        # ok/warning); we check it ourselves first so callers get the actual
+        # termination_condition/status instead of an opaque ValueError.
+        loadable_status = {opt.SolverStatus.ok, opt.SolverStatus.warning}
+        if status not in loadable_status or not self.result.solution:
+            raise RuntimeError(
+                f"Solver did not return a loadable solution "
+                f"(status={status}, termination_condition={term})."
+            )
+        self.model.solutions.load_from(self.result)
+
         # Clear solution cache so it gets rebuilt if accessed
         if hasattr(self, '_solution'):
             delattr(self, '_solution')

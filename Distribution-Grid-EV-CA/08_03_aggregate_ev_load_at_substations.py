@@ -30,15 +30,6 @@ import pandas as pd
 
 import common as C
 
-BA_CENTROIDS_LL = {
-    "WEC_CALN": (-122.0, 38.0),
-    "WEC_BANC": (-121.5, 38.6),
-    "WECC_SCE": (-117.5, 34.0),
-    "WEC_LADW": (-118.3, 34.1),
-    "WEC_SDGE": (-117.1, 32.8),
-    "WECC_IID": (-115.5, 33.0),
-}
-
 
 def _write_wide_parquet(path: Path, ids, values: np.ndarray, id_col: str, extra: dict | None = None) -> None:
     cols = {id_col: np.asarray(ids)}
@@ -136,10 +127,10 @@ def _assign_parent_ba(stations: gpd.GeoDataFrame, mapping: pd.DataFrame) -> pd.S
     )
     ba_gdf = gpd.GeoDataFrame(
         {
-            "parent_ba": list(BA_CENTROIDS_LL.keys()),
+            "parent_ba": list(C.BA_CENTROIDS_LL.keys()),
             "geometry": gpd.points_from_xy(
-                [v[0] for v in BA_CENTROIDS_LL.values()],
-                [v[1] for v in BA_CENTROIDS_LL.values()],
+                [v[0] for v in C.BA_CENTROIDS_LL.values()],
+                [v[1] for v in C.BA_CENTROIDS_LL.values()],
             ),
         },
         crs="EPSG:4326",
@@ -210,14 +201,30 @@ def main() -> None:
     if extra:
         from shapely.geometry import Point
 
+        gw = C.ba_gateway_points_gdf().set_index("substation_id")
         extra_rows = []
+        n_unlocated = 0
         for sid in extra:
-            extra_rows.append({"substation_id": sid, "geometry": Point(0, 0), "source": "unlocated"})
-        stations = pd.concat(
-            [stations, gpd.GeoDataFrame(extra_rows, geometry="geometry", crs=C.CA_ALBERS_CRS)],
-            ignore_index=True,
-        )
-        stations = gpd.GeoDataFrame(stations, geometry="geometry", crs=C.CA_ALBERS_CRS)
+            if sid in gw.index:
+                extra_rows.append(
+                    {"substation_id": sid, "geometry": gw.loc[sid, "geometry"], "source": "ba_gateway"}
+                )
+            else:
+                # Genuinely unresolvable id (not a known BA gateway proxy): a
+                # Point(0,0) placeholder would make the nearest-BA join below
+                # resolve to whichever BA centroid happens to be closest to
+                # the CRS origin, silently mis-assigning parent_ba. Skip it
+                # instead so it is excluded from parent-BA voting/geometry
+                # rather than corrupting it.
+                n_unlocated += 1
+        if n_unlocated:
+            print(f"  WARNING: {n_unlocated} substation_id(s) have no known geometry; excluded from parent_ba join")
+        if extra_rows:
+            stations = pd.concat(
+                [stations, gpd.GeoDataFrame(extra_rows, geometry="geometry", crs=C.CA_ALBERS_CRS)],
+                ignore_index=True,
+            )
+            stations = gpd.GeoDataFrame(stations, geometry="geometry", crs=C.CA_ALBERS_CRS)
 
     parent_ba = _assign_parent_ba(stations, mapping)
     w_taz = mapping.set_index("TAZ").reindex(taz_ids)["w_taz"].fillna(0.0).to_numpy(dtype=float)
@@ -327,7 +334,7 @@ def main() -> None:
     top10 = summary.head(10)
     top10.to_csv(C.MESO_DIR / "top10_substations.csv", index=False)
     summary.head(50).to_csv(C.MESO_DIR / "top50_substations.csv", index=False)
-    print(f"Wrote top-10 substations → {C.MESO_DIR / 'top10_substations.csv'}")
+    print(f"Wrote top-10 substations -> {C.MESO_DIR / 'top10_substations.csv'}")
 
     C.ensure_dir(C.FIGURES_ASTR_DIR)
     plot_gdf = stations.merge(summary, on="substation_id", how="inner")

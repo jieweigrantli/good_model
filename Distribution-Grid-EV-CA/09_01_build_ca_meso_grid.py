@@ -30,10 +30,10 @@ from shapely.geometry import Point
 
 import common as C
 
-HIFLD_LINES_QUERY = (
-    "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/"
-    "Electric_Power_Transmission_Lines/FeatureServer/0/query"
-)
+# Threshold above which a substation is treated as a bulk-transmission
+# boundary point eligible to gateway directly to its parent WECC BA node.
+GATEWAY_KV_THRESHOLD = 230.0
+GATEWAY_CAPACITY_FLOOR_W = 20e6
 
 
 def _to_albers(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -87,29 +87,45 @@ def load_substation_nodes() -> gpd.GeoDataFrame:
             [["substation_id", "substation_name", "source"]]
             .drop_duplicates("substation_id")
         )
+        ba_ll = {f"BA_GW_{ba}": xy for ba, xy in C.BA_CENTROIDS_LL.items()}
         rows = []
         for _, r in extra.iterrows():
+            lon, lat = ba_ll.get(str(r["substation_id"]), (-120.0, 37.0))
             rows.append(
                 {
                     "substation_id": r["substation_id"],
                     "substation_name": r.get("substation_name", r["substation_id"]),
                     "source": r.get("source", "unknown"),
-                    "geometry": Point(0, 0),
+                    "geometry": Point(lon, lat),
                 }
             )
-        gdf = pd.concat(
-            [gdf, gpd.GeoDataFrame(rows, geometry="geometry", crs=C.CA_ALBERS_CRS)],
-            ignore_index=True,
-        )
+        extra_gdf = gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326").to_crs(C.CA_ALBERS_CRS)
+        gdf = pd.concat([gdf, extra_gdf], ignore_index=True)
         gdf = gpd.GeoDataFrame(gdf, geometry="geometry", crs=C.CA_ALBERS_CRS)
 
     # Keep stations that appear in the TAZ map plus all GRIP stations (full PGE backbone)
     keep = set(gdf.loc[gdf["source"] == "grip", "substation_id"]) | needed
     gdf = gdf[gdf["substation_id"].isin(keep)].copy()
-    gdf = gdf.merge(rank, on="substation_id", how="left")
+    gdf = gdf.merge(
+        rank[["substation_id", "mean_week_kwh", "mean_peak_kW"]].drop_duplicates("substation_id"),
+        on="substation_id",
+        how="left",
+    )
     gdf["mean_week_kwh"] = gdf["mean_week_kwh"].fillna(0.0)
     gdf["mean_peak_kW"] = gdf["mean_peak_kW"].fillna(0.0)
     gdf["hub_id"] = gdf["substation_id"].map(lambda s: f"SUB_{s}")
+
+    # Real assigned peak demand (base + EV), used to size fallback gateway
+    # interfaces to what a substation actually needs rather than a flat
+    # floor (previously 20 MW regardless of assigned load -- e.g. one
+    # substation was assigned a 228 MW base-load share behind a 20 MW cap).
+    if C.SUB_HOURLY_LOADS_8760.is_file():
+        peaks = pd.read_parquet(C.SUB_HOURLY_LOADS_8760, columns=["substation_id", "total_peak_W"])
+        peaks["substation_id"] = peaks["substation_id"].astype(str)
+        gdf = gdf.merge(peaks.drop_duplicates("substation_id"), on="substation_id", how="left")
+    if "total_peak_W" not in gdf.columns:
+        gdf["total_peak_W"] = 0.0
+    gdf["total_peak_W"] = gdf["total_peak_W"].fillna(0.0)
     return gdf
 
 
@@ -119,16 +135,8 @@ def assign_parent_ba(hubs: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         wdf = pd.read_csv(wpath)
         wdf["substation_id"] = wdf["substation_id"].astype(str)
         hubs = hubs.merge(wdf[["substation_id", "parent_ba", "w_s"]], on="substation_id", how="left")
-    ba_ll = {
-        "WEC_CALN": (-122.0, 38.0),
-        "WEC_BANC": (-121.5, 38.6),
-        "WECC_SCE": (-117.5, 34.0),
-        "WEC_LADW": (-118.3, 34.1),
-        "WEC_SDGE": (-117.1, 32.8),
-        "WECC_IID": (-115.5, 33.0),
-    }
     ba_gdf = gpd.GeoDataFrame(
-        {"ba": list(ba_ll.keys()), "geometry": [Point(xy) for xy in ba_ll.values()]},
+        {"ba": list(C.BA_CENTROIDS_LL.keys()), "geometry": [Point(xy) for xy in C.BA_CENTROIDS_LL.values()]},
         crs="EPSG:4326",
     ).to_crs(hubs.crs)
     miss = hubs["parent_ba"].isna() if "parent_ba" in hubs.columns else pd.Series(True, index=hubs.index)
@@ -145,47 +153,150 @@ def assign_parent_ba(hubs: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     return hubs
 
 
-def _endpoint_points(geom):
+CORRIDOR_ANCHOR_THRESHOLD_M = 500.0
+# Adjacent digitized spans meant to represent one continuous corridor rarely
+# share exact coordinates (independent digitization / different vintages).
+# 10m left the graph fragmented into ~5,800 mostly-isolated 2-3 node pieces;
+# 100m recovers most of the achievable chaining (substations gaining real
+# multi-substation connectivity roughly doubles vs 10m) without merging
+# obviously-distinct corridors.
+CORRIDOR_COORD_ROUND_M = 100.0
+
+
+def _line_parts(geom):
     if geom is None or geom.is_empty:
-        return None
+        return []
     if geom.geom_type == "LineString":
-        coords = list(geom.coords)
-    elif geom.geom_type == "MultiLineString":
-        coords = list(geom.geoms[0].coords)
-    else:
-        return None
-    if len(coords) < 2:
-        return None
-    return Point(coords[0]), Point(coords[-1])
+        return [geom]
+    if geom.geom_type == "MultiLineString":
+        return list(geom.geoms)
+    return []
 
 
-def build_edges(hubs: gpd.GeoDataFrame, lines: gpd.GeoDataFrame) -> pd.DataFrame:
-    """Snap each line's endpoints to nearest substations; aggregate parallel capacity."""
+def _reconstruct_corridors(hubs: gpd.GeoDataFrame, lines: gpd.GeoDataFrame) -> list[dict]:
+    """Reconstruct substation-to-substation corridors from per-span line geometry.
+
+    The source line layers (GRIP/HIFLD/CEC) digitize transmission circuits as
+    many short spans rather than single substation-to-substation lines (91%
+    of CEC rows have no circuit-grouping field at all). Naively snapping each
+    row's own two endpoints to the nearest substation treats mid-corridor
+    waypoints as if they were destinations: when a span's far end
+    coincidentally snaps to the SAME substation as its near end (because the
+    corridor continues past it, invisible to that one row), the old logic
+    silently dropped the whole span as a false self-loop -- measured at 52%
+    of all loaded lines, fully isolating 58 substations that do have real
+    nearby lines (e.g. a line whose true endpoint is 7.5 m from the
+    substation).
+
+    This instead builds a coordinate-level graph of every span, takes
+    connected components (each one a physically-continuous corridor
+    network), anchors substations to component coordinates within
+    ``CORRIDOR_ANCHOR_THRESHOLD_M``, and reduces each component to a minimum
+    spanning tree over just its anchored substations -- each MST edge's
+    capacity is the bottleneck (minimum) capacity along its shortest
+    physical path, matching how a chain of segments in series is actually
+    capacity-limited by its weakest link.
+    """
+    import networkx as nx
+
+    r = CORRIDOR_COORD_ROUND_M
+    g = nx.Graph()
+    for _, ln in lines.iterrows():
+        cap = C.line_limit_w(ln)
+        kv = C.line_rated_kv(ln)
+        for part in _line_parts(ln.geometry):
+            coords = list(part.coords)
+            if len(coords) < 2:
+                continue
+            a = (round(coords[0][0] / r) * r, round(coords[0][1] / r) * r)
+            b = (round(coords[-1][0] / r) * r, round(coords[-1][1] / r) * r)
+            if a == b:
+                continue
+            length_m = max(part.length, 1.0)
+            if g.has_edge(a, b):
+                if cap > g[a][b]["capacity_W"]:
+                    g[a][b]["capacity_W"] = cap
+                    g[a][b]["rated_kv"] = kv
+            else:
+                g.add_edge(a, b, length_m=length_m, capacity_W=cap, rated_kv=kv)
+
+    if g.number_of_nodes() == 0:
+        return []
+
+    node_xy = np.array(g.nodes)
+    node_list = list(g.nodes)
     hx = hubs.geometry.x.to_numpy()
     hy = hubs.geometry.y.to_numpy()
     ids = hubs["hub_id"].to_numpy()
+
+    # Anchor each substation to its nearest graph coordinate, if close enough.
+    anchor_of: dict[str, tuple] = {}
+    for i in range(len(ids)):
+        d2 = (node_xy[:, 0] - hx[i]) ** 2 + (node_xy[:, 1] - hy[i]) ** 2
+        j = int(np.argmin(d2))
+        if d2[j] <= CORRIDOR_ANCHOR_THRESHOLD_M ** 2:
+            anchor_of[ids[i]] = node_list[j]
+
+    node_to_hubs: dict[tuple, list[str]] = {}
+    for hid, node in anchor_of.items():
+        node_to_hubs.setdefault(node, []).append(hid)
+
     rows = []
-    for _, ln in lines.iterrows():
-        ends = _endpoint_points(ln.geometry)
-        if ends is None:
+    for comp in nx.connected_components(g):
+        comp_hub_nodes = {n: node_to_hubs[n] for n in comp if n in node_to_hubs}
+        anchors = [(hid, n) for n, hids in comp_hub_nodes.items() for hid in hids]
+        if len(anchors) < 2:
             continue
-        a, b = ends
-        da = (hx - a.x) ** 2 + (hy - a.y) ** 2
-        db = (hx - b.x) ** 2 + (hy - b.y) ** 2
-        ia, ib = int(np.argmin(da)), int(np.argmin(db))
-        if ia == ib:
-            continue
-        cap = C.line_limit_w(ln)
-        u, v = sorted([ids[ia], ids[ib]])
-        rows.append(
-            {
-                "source": u,
-                "target": v,
-                "installed_capacity_W": cap,
-                "rated_mva": cap / 1e6,
-                "rated_kv": ln.get("RATEDKV", ln.get("VOLTAGE", ln.get("KV"))),
-            }
-        )
+        anchor_nodes = {n for _, n in anchors}
+        sub = g.subgraph(comp)
+        # Shortest (by physical length) path + bottleneck capacity from each
+        # anchor to every other anchor in this component, keeping only pairs
+        # that are genuinely DIRECT (no other anchor lies on the shortest
+        # path between them). A real transmission network is meshed, not a
+        # tree -- reducing every component to a minimum spanning tree
+        # discards genuine parallel/looped paths, creating artificial
+        # bottlenecks (measured: 3,000+ GWh of spurious wastage/shortfall
+        # from generation stranded upstream of a bottleneck with no export
+        # path). Keeping every direct-adjacency pair instead preserves real
+        # loops/redundancy while still correctly excluding non-adjacent
+        # pairs whose "connection" only exists by routing through a third
+        # substation (already captured as two separate direct edges).
+        seen_pairs = set()
+        for hid_a, node_a in anchors:
+            dist, paths = nx.single_source_dijkstra(sub, node_a, weight="length_m")
+            for hid_b, node_b in anchors:
+                if hid_a >= hid_b or node_b not in paths or node_a == node_b:
+                    continue
+                key = (hid_a, hid_b)
+                if key in seen_pairs:
+                    continue
+                seen_pairs.add(key)
+                path = paths[node_b]
+                if any(n in anchor_nodes for n in path[1:-1]):
+                    continue  # another substation sits between these two
+                caps, kvs = [], []
+                for u, v in zip(path[:-1], path[1:]):
+                    ed = sub[u][v]
+                    caps.append(ed["capacity_W"])
+                    kvs.append(ed["rated_kv"])
+                idx = int(np.argmin(caps))
+                src, tgt = sorted([hid_a, hid_b])
+                rows.append(
+                    {
+                        "source": src,
+                        "target": tgt,
+                        "installed_capacity_W": float(caps[idx]),
+                        "rated_mva": float(caps[idx]) / 1e6,
+                        "rated_kv": float(kvs[idx]),
+                    }
+                )
+    return rows
+
+
+def build_edges(hubs: gpd.GeoDataFrame, lines: gpd.GeoDataFrame, rows: list[dict] | None = None) -> pd.DataFrame:
+    """Aggregate parallel line capacity into one edge per substation corridor."""
+    if rows is None:
+        rows = _reconstruct_corridors(hubs, lines)
     if not rows:
         return pd.DataFrame(
             columns=["source", "target", "installed_capacity_W", "n_lines", "rated_mva"]
@@ -210,8 +321,14 @@ def load_transmission_lines(hubs: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         extra = _to_albers(gpd.read_file(C.HIFLD_TX_LINES_GPKG))
         extra["line_source"] = "hifld"
         frames.append(extra)
+    # Statewide CEC transmission lines cover SCE/SDG&E/LADWP/IID territory
+    # that GRIP (PG&E-only) never included.
+    if C.CEC_TRANSMISSION_GPKG.is_file():
+        cec = _to_albers(gpd.read_file(C.CEC_TRANSMISSION_GPKG))
+        cec["line_source"] = "cec"
+        frames.append(cec)
     else:
-        print("  HIFLD transmission lines cache missing; using GRIP lines only.")
+        print("  CEC statewide transmission lines cache missing; non-PG&E lines unavailable.")
     return pd.concat(frames, ignore_index=True)
 
 
@@ -257,17 +374,22 @@ def map_wecc_generators(hubs: gpd.GeoDataFrame) -> list[dict]:
             geometry=gpd.points_from_xy(df.loc[has_xy, "lon"], df.loc[has_xy, "lat"]),
             crs="EPSG:4326",
         ).to_crs(hubs.crs)
-        joined = gpd.sjoin_nearest(
-            gdf, hubs[["hub_id", "substation_id", "parent_ba", "geometry"]], how="left", distance_col="snap_m"
-        )
-        joined = joined.drop_duplicates(subset=["handle", "parent_ba"], keep="first")
+        hub_cols = hubs[["hub_id", "substation_id", "geometry"]].copy()
+        if "parent_ba" in hubs.columns:
+            hub_cols["hub_parent_ba"] = hubs["parent_ba"].values
+        joined = gpd.sjoin_nearest(gdf, hub_cols, how="left", distance_col="snap_m")
+        subset = [c for c in ("handle", "parent_ba") if c in joined.columns]
+        if subset:
+            joined = joined.drop_duplicates(subset=subset, keep="first")
+        else:
+            joined = joined.drop_duplicates(subset=["handle"], keep="first")
         for _, r in joined.iterrows():
             mapped.append(
                 {
                     "handle": r["handle"],
                     "hub_id": r["hub_id"],
-                    "substation_id": r["substation_id"],
-                    "parent_ba": r["parent_ba_left"] if "parent_ba_left" in joined.columns else r["parent_ba"],
+                    "substation_id": r.get("substation_id"),
+                    "parent_ba": r["parent_ba"] if "parent_ba" in joined.columns else r.get("hub_parent_ba"),
                     "class": r["class"],
                     "type": r["type"],
                     "fuel": r["fuel"],
@@ -348,34 +470,72 @@ def candidate_bess(hubs: gpd.GeoDataFrame) -> list[dict]:
     return out
 
 
-def connected_component_gateways(hubs: gpd.GeoDataFrame, edges: pd.DataFrame) -> pd.DataFrame:
-    """One BA↔substation interface per connected component (plus isolates)."""
+def voltage_tier_gateways(
+    hubs: gpd.GeoDataFrame,
+    edges: pd.DataFrame,
+    line_rows: list[dict],
+    kv_threshold: float = GATEWAY_KV_THRESHOLD,
+    capacity_floor_w: float = GATEWAY_CAPACITY_FLOOR_W,
+) -> pd.DataFrame:
+    """BA<->substation interfaces at every bulk-transmission boundary substation.
+
+    Every substation touching a line at/above ``kv_threshold`` in each
+    connected component becomes a gateway to that component's BA, sized from
+    the sum of its incident high-voltage line capacity (real multi-point
+    interconnection instead of one choke-point per component). Components
+    with no line at/above the threshold fall back to a single gateway (the
+    substation with the largest EV energy), matching the old behavior, so
+    small/isolated pieces of the network still connect somewhere.
+    """
     import networkx as nx
+
+    incident_hv_capacity: dict[str, float] = {}
+    for r in line_rows:
+        if r["rated_kv"] < kv_threshold:
+            continue
+        incident_hv_capacity[r["source"]] = incident_hv_capacity.get(r["source"], 0.0) + r["installed_capacity_W"]
+        incident_hv_capacity[r["target"]] = incident_hv_capacity.get(r["target"], 0.0) + r["installed_capacity_W"]
 
     g = nx.Graph()
     g.add_nodes_from(hubs["hub_id"].tolist())
     for _, e in edges.iterrows():
         g.add_edge(e["source"], e["target"])
     hubs_ix = hubs.set_index("hub_id")
+
     rows = []
     for comp in nx.connected_components(g):
         members = hubs_ix.loc[list(comp)]
-        # pick the bus with largest EV energy in each component as the gateway
-        gw = members["mean_week_kwh"].idxmax() if "mean_week_kwh" in members else members.index[0]
-        ba = members.loc[gw, "parent_ba"]
-        # interface capacity: 2× component mean kW, floor 50 MW
-        mean_kw = float(members["mean_week_kwh"].sum()) / (7 * 24) if "mean_week_kwh" in members else 50e3
-        cap_w = max(50e6, mean_kw * 1e3 * 2.0)
-        rows.append(
-            {
-                "hub_id": gw,
-                "parent_ba": ba,
-                "interface_capacity_W": cap_w,
-                "n_substations": len(members),
-                "role": "component_gateway",
-            }
-        )
-    # Isolates already included. Also attach named intertie hubs if missing.
+        candidates = [hid for hid in members.index if incident_hv_capacity.get(hid, 0.0) > 0]
+        if candidates:
+            for hid in candidates:
+                rows.append(
+                    {
+                        "hub_id": hid,
+                        "parent_ba": members.loc[hid, "parent_ba"],
+                        "interface_capacity_W": max(capacity_floor_w, incident_hv_capacity[hid]),
+                        "n_substations": len(members),
+                        "role": "voltage_gateway",
+                    }
+                )
+        else:
+            # No line >= threshold anywhere in this component: fall back to
+            # one gateway at the highest-EV-energy substation. Size the
+            # interface to the component's real assigned peak demand (with
+            # headroom), not a flat floor -- a flat 20 MW cap regardless of
+            # load previously stranded substations assigned hundreds of MW
+            # (e.g. one substation's w_s-weighted base load alone was 228 MW)
+            # behind a fixed floor sized for a small distribution tap.
+            gw = members["mean_week_kwh"].idxmax() if "mean_week_kwh" in members else members.index[0]
+            component_peak_w = float(members["total_peak_W"].sum()) if "total_peak_W" in members else 0.0
+            rows.append(
+                {
+                    "hub_id": gw,
+                    "parent_ba": members.loc[gw, "parent_ba"],
+                    "interface_capacity_W": max(capacity_floor_w, component_peak_w * 1.5),
+                    "n_substations": len(members),
+                    "role": "component_gateway_fallback",
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -438,15 +598,21 @@ def main(aggregate: int | None = None) -> None:
 
     print("Building edges from TransmissionLines.shp (voltage / MVA heuristics)...")
     lines = load_transmission_lines(hubs)
-    edges = build_edges(hubs, lines)
+    line_rows = _reconstruct_corridors(hubs, lines)
+    edges = build_edges(hubs, lines, rows=line_rows)
     print(f"  {len(edges)} aggregated corridors")
 
-    print("Spatial join: WECC CA generators / storage → nearest substation...")
+    print("Spatial join: WECC CA generators / storage -> nearest substation...")
     generators = map_wecc_generators(hubs)
     print("Snapping named interties (Path 15 / 26 / 66 / Palo Verde)...")
     interties = map_interties(hubs)
     bess = candidate_bess(hubs)
-    interfaces = connected_component_gateways(hubs, edges)
+    interfaces = voltage_tier_gateways(hubs, edges, line_rows)
+    print(
+        f"  {len(interfaces)} BA gateway interfaces "
+        f"({(interfaces['role'] == 'voltage_gateway').sum()} voltage-tier, "
+        f"{(interfaces['role'] == 'component_gateway_fallback').sum()} fallback)"
+    )
     # ensure named intertie hubs also have BA interfaces
     have = set(zip(interfaces["hub_id"], interfaces["parent_ba"])) if len(interfaces) else set()
     extra_iface = []

@@ -63,6 +63,12 @@ HIFLD_SUBSTATIONS_GPKG = DATA_DIR / "hifld" / "electric_substations_ca.gpkg"
 CEC_UTILITY_GPKG = DATA_DIR / "hifld" / "ca_electric_utility_territories.gpkg"
 HIFLD_TX_LINES_GPKG = DATA_DIR / "hifld" / "electric_transmission_lines_ca.gpkg"
 
+# Manually-fetched CEC ArcGIS layers (the live CEC_UTILITY_QUERY_URL service was
+# retired; these already sit on disk under the modern CEC service names).
+CEC_LSE_IOU_POU_GPKG = DATA_DIR / "cec" / "ca_lse_iou_pou.gpkg"
+CEC_TRANSMISSION_GPKG = DATA_DIR / "cec" / "ca_transmission_lines.gpkg"
+CEC_BALANCING_AUTH_GPKG = DATA_DIR / "cec" / "ca_balancing_authorities.gpkg"
+
 # Canonical ASTR meso artifacts
 TAZ_TO_SUBSTATION_CSV = MAPPING_DIR / "taz_to_substation.csv"
 TAZ_HOURLY_EV_8760 = MESO_DIR / "taz_hourly_ev_8760.parquet"
@@ -92,6 +98,19 @@ KV_TO_MVA = {
     115: 150,
     69: 80,
     60: 60,
+}
+
+# Approximate geographic centroid per in-CA WECC BA (lon, lat WGS84). Used both
+# as the nearest-BA reference point for parent_ba assignment and as the
+# synthetic "BA_GW_<ba>" gateway-substation location when no real substation
+# is available for a BA (e.g. before HIFLD/CEC data is loaded).
+BA_CENTROIDS_LL = {
+    "WEC_CALN": (-122.0, 38.0),
+    "WEC_BANC": (-121.5, 38.6),
+    "WECC_SCE": (-117.5, 34.0),
+    "WEC_LADW": (-118.3, 34.1),
+    "WEC_SDGE": (-117.1, 32.8),
+    "WECC_IID": (-115.5, 33.0),
 }
 
 # Named CA intertie / path attachment points (lon, lat WGS84)
@@ -185,32 +204,45 @@ def require_file(path: Path, hint: str = "") -> Path:
     return path
 
 
+def _row_value_ci(row, candidates: Iterable[str]):
+    """Case-insensitive lookup of the first present, truthy-numeric column value.
+
+    Column names vary by data source (e.g. GRIP's "RATEDKV" vs CEC's "kV"), so
+    a plain ``in`` membership check against a fixed-case candidate list misses
+    real columns. This matches case-insensitively, like ``pick_column``.
+    """
+    idx = list(getattr(row, "index", ())) if not isinstance(row, dict) else list(row.keys())
+    lower = {c.lower(): c for c in idx}
+    for cand in candidates:
+        col = lower.get(cand.lower())
+        if col is None:
+            continue
+        val = row[col]
+        try:
+            if val is not None and float(val) > 0:
+                return float(val)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def line_limit_mva(row, default_kv: float = 115.0) -> float:
     """Rated MVA if present, else voltage heuristic (500 kV≈1500 MVA, …)."""
-    for col in (
-        "RATEDMVA", "RatedMVA", "RATED_MVA", "MVA", "CAPACITY", "CAP_MVA",
-        "RATE_MVA", "THERMALMVA",
-    ):
-        if col in getattr(row, "index", ()) or (isinstance(row, dict) and col in row):
-            val = row[col]
-            try:
-                if val is not None and float(val) > 0:
-                    return float(val)
-            except (TypeError, ValueError):
-                pass
-    kv = default_kv
-    for col in ("RATEDKV", "RatedKV", "VOLTAGE", "KV", "VOLT_CLASS", "VOLT"):
-        if col in getattr(row, "index", ()) or (isinstance(row, dict) and col in row):
-            try:
-                v = float(row[col])
-                if v > 0:
-                    kv = v
-                    break
-            except (TypeError, ValueError):
-                pass
+    mva = _row_value_ci(
+        row,
+        ("RATEDMVA", "RATED_MVA", "MVA", "CAPACITY", "CAP_MVA", "RATE_MVA", "THERMALMVA"),
+    )
+    if mva is not None:
+        return mva
+    kv = _row_value_ci(row, ("RATEDKV", "VOLTAGE", "KV", "VOLT_CLASS", "VOLT")) or default_kv
     keys = np.array(list(KV_TO_MVA.keys()), dtype=float)
     nearest = int(keys[np.argmin(np.abs(keys - kv))])
     return float(KV_TO_MVA[nearest])
+
+
+def line_rated_kv(row, default_kv: float = 115.0) -> float:
+    """Rated kV if present on the row (case-insensitive column match), else default."""
+    return _row_value_ci(row, ("RATEDKV", "VOLTAGE", "KV", "VOLT_CLASS", "VOLT")) or default_kv
 
 
 def line_limit_w(row, default_kv: float = 115.0) -> float:
@@ -283,6 +315,28 @@ def download_arcgis_geojson(query_url: str, out_path: Path, where: str = "1=1"):
     out.to_file(out_path, driver="GPKG")
     print(f"  wrote {out_path} ({len(out)} features)")
     return out
+
+
+def ba_gateway_points_gdf():
+    """Synthetic 'BA_GW_<ba>' substation-proxy points, one per in-CA WECC BA.
+
+    Used as a last-resort stand-in only where no real substation exists for a
+    BA (e.g. before HIFLD/CEC data is available). Shared across 08_01/08_03/
+    09_01 so all three agree on the same id/geometry per BA.
+    """
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    rows = [
+        {
+            "substation_id": f"BA_GW_{ba}",
+            "substation_name": f"Gateway {ba}",
+            "source": "ba_gateway",
+            "geometry": Point(lon, lat),
+        }
+        for ba, (lon, lat) in BA_CENTROIDS_LL.items()
+    ]
+    return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326").to_crs(CA_ALBERS_CRS)
 
 
 def utility_is_pge(name: str) -> bool:

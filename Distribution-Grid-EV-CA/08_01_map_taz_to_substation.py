@@ -18,17 +18,19 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-from shapely.geometry import Point
 
 import common as C
 
 HIFLD_QUERY_URL = (
     "https://services1.arcgis.com/ZIL9uO234SBBPGL7/arcgis/rest/services/"
-    "CA_Substations_Final/FeatureServer/0/query"
+    "CA_Substations_Final/FeatureServer/7/query"
 )
+# California_Electric_Utility_Service_Areas was retired by CEC; the modern
+# equivalent (ElectricLoadServingEntities_IOU_POU) is already cached on disk
+# at C.CEC_LSE_IOU_POU_GPKG, checked first in load_utility_territories().
 CEC_UTILITY_QUERY_URL = (
     "https://services3.arcgis.com/bWPjFyq029ChCGur/arcgis/rest/services/"
-    "California_Electric_Utility_Service_Areas/FeatureServer/0/query"
+    "ElectricLoadServingEntities_IOU_POU/FeatureServer/0/query"
 )
 
 PGE_DISTANCE_FALLBACK_M = 25_000.0
@@ -83,7 +85,9 @@ def load_hifld_substations() -> gpd.GeoDataFrame:
 
 
 def load_utility_territories() -> gpd.GeoDataFrame:
-    if C.CEC_UTILITY_GPKG.is_file():
+    if C.CEC_LSE_IOU_POU_GPKG.is_file():
+        gdf = gpd.read_file(C.CEC_LSE_IOU_POU_GPKG)
+    elif C.CEC_UTILITY_GPKG.is_file():
         gdf = gpd.read_file(C.CEC_UTILITY_GPKG)
     else:
         try:
@@ -121,28 +125,6 @@ def load_taz_centroids() -> gpd.GeoDataFrame:
     return taz.to_crs(C.CA_ALBERS_CRS)[["TAZ", "geometry"]].copy()
 
 
-def _ba_gateway_points() -> gpd.GeoDataFrame:
-    rows = []
-    ba_ll = {
-        "WEC_CALN": (-122.0, 38.0),
-        "WEC_BANC": (-121.5, 38.6),
-        "WECC_SCE": (-117.5, 34.0),
-        "WEC_LADW": (-118.3, 34.1),
-        "WEC_SDGE": (-117.1, 32.8),
-        "WECC_IID": (-115.5, 33.0),
-    }
-    for ba, (lon, lat) in ba_ll.items():
-        rows.append(
-            {
-                "substation_id": f"BA_GW_{ba}",
-                "substation_name": f"Gateway {ba}",
-                "source": "ba_gateway",
-                "geometry": Point(lon, lat),
-            }
-        )
-    return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326").to_crs(C.CA_ALBERS_CRS)
-
-
 def _nearest(taz: gpd.GeoDataFrame, stations: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     if taz.empty or stations.empty:
         out = taz.copy()
@@ -166,7 +148,7 @@ def assign_utility_mask(
     if not territories.empty:
         hit = gpd.sjoin(taz, territories, how="left", predicate="within")
         hit = hit.drop_duplicates(subset=["TAZ"], keep="first")
-        out = out.drop(columns=["is_pge"], errors="ignore")
+        out = out.drop(columns=["is_pge", "utility_name", "parent_ba"], errors="ignore")
         out = out.merge(
             hit[["TAZ", "is_pge", "utility_name", "parent_ba"]],
             on="TAZ",
@@ -209,11 +191,11 @@ def main() -> None:
     pge_taz = taz[taz["is_pge"]].copy()
     other_taz = taz[~taz["is_pge"]].copy()
 
-    print("Nearest join: PG&E TAZs → EDSubstations ...")
+    print("Nearest join: PG&E TAZs -> EDSubstations ...")
     pge_join = _nearest(pge_taz[["TAZ", "geometry"]], grip)
 
-    print("Nearest join: non-PG&E TAZs → HIFLD substations ...")
-    hifld_pool = hifld if not hifld.empty else _ba_gateway_points()
+    print("Nearest join: non-PG&E TAZs -> HIFLD substations ...")
+    hifld_pool = hifld if not hifld.empty else C.ba_gateway_points_gdf()
     if hifld.empty:
         print("  HIFLD empty — using BA gateway proxies for non-PG&E TAZs")
     other_join = _nearest(other_taz[["TAZ", "geometry"]], hifld_pool)

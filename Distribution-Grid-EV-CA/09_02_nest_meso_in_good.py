@@ -136,6 +136,7 @@ def build_nested_graph(
     capacity_scale_meso: float,
     capacity_scale_interface: float,
     bess_top_n: int = 0,
+    bess_hub_override: set[str] | None = None,
 ) -> dict:
     generators = network.get("generators") or []
     g = _strip_mapped_ca_assets(base, generators)
@@ -161,7 +162,12 @@ def build_nested_graph(
         hid: float(np.asarray(ev_kW[hub_index[hid]]).max()) if hid in hub_index else 0.0
         for hid in hub_ids
     }
-    if bess_top_n and bess_top_n > 0:
+    if bess_hub_override is not None:
+        # Restrict to EV-positive hubs even when an explicit (e.g. congestion-
+        # ranked) override is supplied, so BESS still lands where there's
+        # local EV demand to smooth rather than on a zero-load pass-through.
+        bess_hubs = {hid for hid in bess_hub_override if peaks.get(hid, 0.0) > 0}
+    elif bess_top_n and bess_top_n > 0:
         bess_hubs = set(sorted(peaks, key=peaks.get, reverse=True)[:bess_top_n])
     else:
         bess_hubs = {hid for hid, p in peaks.items() if p > 0}
@@ -178,8 +184,14 @@ def build_nested_graph(
         if i is not None:
             ev_prof = ev_kW[i] if include_ev else np.zeros(ev_kW.shape[1], dtype=float)
             if total_kW is not None:
-                ev_for_base = ev_kW[i] if include_ev else np.zeros_like(total_kW[i])
-                base_kw = np.clip(np.asarray(total_kW[i], dtype=float) - np.asarray(ev_for_base, dtype=float), 0, None)
+                # total_kW = base + EV always (by construction in 08_03), so
+                # the true non-EV baseline is total_kW - ev_kW regardless of
+                # include_ev. Previously this only subtracted EV when
+                # include_ev was True, so an "no EV" (include_ev=False) run
+                # silently folded the EV load into base_load instead of
+                # removing it, making the no-EV scenario serve identical
+                # total demand to the with-EV scenario.
+                base_kw = np.clip(np.asarray(total_kW[i], dtype=float) - np.asarray(ev_kW[i], dtype=float), 0, None)
             else:
                 base_kw = np.zeros_like(ev_prof)
             assets[f"base_load_{hid}"] = make_base_load_asset(hid, base_kw * 1000.0)
