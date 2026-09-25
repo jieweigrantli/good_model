@@ -33,6 +33,16 @@ class Network:
         self.wastage_capacity = kwargs.get('wastage_capacity', None)
         self.wastage_cost = kwargs.get('wastage_cost', None)
 
+        # Importing constraint duals forces the solver interface to
+        # materialize a name -> value entry for every constraint in the model
+        # (see GUROBI_RUN.gurobi_run: ConstrName + Pi + a dict over all of
+        # them). On a multi-million-constraint LP that is several GB on its
+        # own, and Region.solution() then rebuilds a dict over every dual for
+        # each node. Default stays True for backwards compatibility; set
+        # False when only primal quantities (dispatch, flows, shortfall) are
+        # needed.
+        self.extract_duals = kwargs.get('extract_duals', True)
+
         self.graph = nx.DiGraph()
         self.assets = {}
         self.lines = {}
@@ -278,13 +288,34 @@ class Network:
                 f"{instruction}.{alt_msg}"
             )
 
-        self.model.dual = pyomo.Suffix(direction = pyomo.Suffix.IMPORT)
+        if self.extract_duals:
+            self.model.dual = pyomo.Suffix(direction = pyomo.Suffix.IMPORT)
 
-        # Building and solving as a linear problem. load_solutions=False so we
-        # can inspect the termination condition ourselves before Pyomo raises
-        # on a non-loadable status (e.g. 'aborted' from a hit TimeLimit).
+        # The direct/persistent interfaces accept save_results=False, which
+        # skips building a {name: value} dict over every variable (and every
+        # constraint, when duals are imported) and instead writes values
+        # straight into the Pyomo vars via load_vars(). The default
+        # save_results=True path is the one that reproducibly MemoryErrors at
+        # `getAttr("X", vars)` on multi-million-variable models -- it
+        # materializes ~1 Python str + 1 float + 1 dict entry per variable,
+        # and the file-based interface additionally round-trips all of it
+        # through a text .sol file. Pyomo's own source flags the dict path as
+        # "only needed for backwards compatibility".
+        direct_interface = hasattr(solver, '_save_results')
+
         t0 = time.time()
-        self.result = solver.solve(self.model, tee = tee, load_solutions = False)
+        if direct_interface:
+            # This path loads values itself and, unlike load_from(), does not
+            # raise on a non-optimal-but-loadable status; it simply checks
+            # SolCount, so the status gate below stays informational.
+            self.result = solver.solve(
+                self.model, tee = tee, load_solutions = True, save_results = False
+                )
+        else:
+            # load_solutions=False so we can inspect the termination condition
+            # ourselves before Pyomo raises on a non-loadable status (e.g.
+            # 'aborted' from a hit TimeLimit).
+            self.result = solver.solve(self.model, tee = tee, load_solutions = False)
         cprint(f'Problem Solved: {time.time() - t0}', self.verbose)
 
         term = self.result.solver.termination_condition
@@ -296,12 +327,18 @@ class Network:
         # ok/warning); we check it ourselves first so callers get the actual
         # termination_condition/status instead of an opaque ValueError.
         loadable_status = {opt.SolverStatus.ok, opt.SolverStatus.warning}
-        if status not in loadable_status or not self.result.solution:
+        if status not in loadable_status:
             raise RuntimeError(
                 f"Solver did not return a loadable solution "
                 f"(status={status}, termination_condition={term})."
             )
-        self.model.solutions.load_from(self.result)
+        if not direct_interface:
+            if not self.result.solution:
+                raise RuntimeError(
+                    f"Solver did not return a loadable solution "
+                    f"(status={status}, termination_condition={term})."
+                )
+            self.model.solutions.load_from(self.result)
 
         # Clear solution cache so it gets rebuilt if accessed
         if hasattr(self, '_solution'):

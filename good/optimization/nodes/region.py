@@ -35,6 +35,23 @@ class Region(Node):
         self.wastage_capacity = kwargs.get('wastage_capacity', 0)
         self.wastage_cost = kwargs.get('wastage_cost', 1)
 
+        # Step-down (transformer bank) rating in W, or None for no limit.
+        #
+        # Without this a node has unlimited throughput: power moves from the
+        # transmission network into local load with no transformer between
+        # them, so "this substation cannot deliver any more" is not a state
+        # the model can represent. It is not a marginal omission -- PG&E's
+        # published bank loadings run at a median 85.6% of rating, 41% of
+        # substations are above 90% and 19% are already above 100%, so the
+        # transformer binds across most of the system while the transmission
+        # corridors above it still have headroom.
+        #
+        # The limit applies to *net* import, not gross flow, so a switching
+        # station that passes power through at transmission voltage is
+        # unaffected -- only energy actually stepped down to serve local load
+        # crosses the transformer.
+        self.transformer_capacity = kwargs.get('transformer_capacity', None)
+
     def parameters(self, model):
 
         for asset in self.assets.values():
@@ -112,12 +129,37 @@ class Region(Node):
                 exported_energy + shortfall - wastage
                 )
             
-            if not isinstance(asset_net_energy, float):
+            # Test the whole balance, not just the assets. A node whose assets
+            # are all fixed-profile Loads (demand, EV load, profile-pinned
+            # solar/wind) has a plain-float asset_net_energy, and the old
+            # check skipped its balance entirely -- its demand was silently
+            # ignored and its lines could export energy it never had. In the
+            # nested WECC-CA model that was 2,641 of 3,060 nodes and 32% of all
+            # demand. shortfall/wastage are always variables, so net_energy is
+            # only constant for a node with no lines and no shortfall/wastage.
+            if not isinstance(net_energy, (int, float)):
 
                 setattr(
                     model, f"{self.handle}::balance:{step}",
                     pyomo.Constraint(expr = net_energy == 0)
                 )
+
+            # Step-down limit: net energy drawn from the network in this step
+            # may not exceed what the transformer bank can carry. Skipped when
+            # the node has no lines, since there is then nothing to limit.
+            if self.transformer_capacity is not None:
+
+                net_import = imported_energy - exported_energy
+
+                if not isinstance(net_import, (int, float)):
+
+                    setattr(
+                        model, f"{self.handle}::transformer:{step}",
+                        pyomo.Constraint(
+                            expr = net_import <=
+                                self.transformer_capacity * model.time_step
+                        )
+                    )
 
         return model
 

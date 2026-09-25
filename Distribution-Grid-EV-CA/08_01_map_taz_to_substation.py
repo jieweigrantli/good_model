@@ -35,6 +35,20 @@ CEC_UTILITY_QUERY_URL = (
 
 PGE_DISTANCE_FALLBACK_M = 25_000.0
 
+# Each TAZ's load is split across its KNN_K nearest substations in its utility
+# pool, weighted by inverse distance ** KNN_POWER, instead of all going to the
+# single nearest one. A real TAZ is served by several substations, and
+# single-nearest assignment let a few substations absorb dozens of TAZs.
+#   KNN_MIN_DISTANCE_M floors distances so a TAZ centroid sitting on top of a
+#     substation does not get an effectively infinite weight.
+#   KNN_MAX_RATIO drops neighbours more than this multiple of the (floored)
+#     nearest distance, so a TAZ next to a substation stays local while a
+#     rural TAZ with no close substation still spreads across several.
+KNN_K = 4
+KNN_POWER = 2.0
+KNN_MIN_DISTANCE_M = 1_000.0
+KNN_MAX_RATIO = 3.0
+
 
 def load_grip_substations() -> gpd.GeoDataFrame:
     C.require_file(
@@ -137,6 +151,42 @@ def _nearest(taz: gpd.GeoDataFrame, stations: gpd.GeoDataFrame) -> gpd.GeoDataFr
     return joined.drop_duplicates(subset=["TAZ"], keep="first")
 
 
+def _knn_allocation(taz: gpd.GeoDataFrame, stations: gpd.GeoDataFrame) -> pd.DataFrame:
+    """Split each TAZ across its KNN_K nearest stations by inverse distance."""
+    from scipy.spatial import cKDTree
+
+    cols = ["TAZ", "substation_id", "substation_name", "source", "distance_m", "weight", "rank"]
+    if taz.empty or stations.empty:
+        return pd.DataFrame(columns=cols)
+
+    k = min(KNN_K, len(stations))
+    tree = cKDTree(np.column_stack([stations.geometry.x, stations.geometry.y]))
+    dist, idx = tree.query(np.column_stack([taz.geometry.x, taz.geometry.y]), k=k)
+    dist = np.asarray(dist, dtype=float).reshape(len(taz), k)
+    idx = np.asarray(idx).reshape(len(taz), k)
+
+    floored = np.maximum(dist, KNN_MIN_DISTANCE_M)
+    keep = floored <= KNN_MAX_RATIO * floored[:, :1]   # nearest is always kept
+    w = np.where(keep, floored ** -KNN_POWER, 0.0)
+    w = w / w.sum(axis=1, keepdims=True)
+
+    st = stations.reset_index(drop=True)
+    taz_ids = taz["TAZ"].to_numpy()
+    r, c = np.nonzero(w > 0)
+    return pd.DataFrame(
+        {
+            "TAZ": taz_ids[r],
+            "substation_id": st["substation_id"].to_numpy()[idx[r, c]],
+            "substation_name": st["substation_name"].to_numpy()[idx[r, c]],
+            "source": st["source"].to_numpy()[idx[r, c]],
+            "distance_m": dist[r, c],
+            "weight": w[r, c],
+            "rank": c + 1,
+        },
+        columns=cols,
+    )
+
+
 def assign_utility_mask(
     taz: gpd.GeoDataFrame, territories: gpd.GeoDataFrame, grip: gpd.GeoDataFrame
 ) -> gpd.GeoDataFrame:
@@ -155,8 +205,13 @@ def assign_utility_mask(
             how="left",
         )
         out["is_pge"] = out["is_pge"].fillna(False).astype(bool)
-    # Fallback: TAZ within buffer of a GRIP station is treated as PG&E
-    unmatched = ~out["is_pge"]
+    # Fallback for TAZs that matched no territory polygon at all: within a
+    # buffer of a GRIP station, treat as PG&E. It must not touch TAZs that did
+    # match a non-PG&E territory -- selecting on ~is_pge used to flip them, so
+    # SMUD (WEC_BANC) TAZs 10-24 km from a GRIP station became PG&E and piled
+    # ~470k Sacramento residents each onto WEST SACRAMENTO and DEEPWATER, and
+    # SCE TAZs in Tulare onto STONE CORRAL.
+    unmatched = out["utility_name"].isna()
     if unmatched.any() and not grip.empty:
         tmp = _nearest(out.loc[unmatched, ["TAZ", "geometry"]], grip)
         near = tmp["distance_m"].fillna(np.inf) <= PGE_DISTANCE_FALLBACK_M
@@ -232,6 +287,25 @@ def main() -> None:
     print(f"Wrote {out_path} ({len(out)} rows)")
     print(out["source"].value_counts().to_string())
     print(f"median distance_m={out['distance_m'].median():.0f}")
+
+    print(f"k-nearest allocation (k={KNN_K}, 1/d^{KNN_POWER:g}) within each utility pool ...")
+    knn = pd.concat(
+        [
+            _knn_allocation(pge_taz[["TAZ", "geometry"]], grip).assign(utility_mask="pge_edsubstation"),
+            _knn_allocation(other_taz[["TAZ", "geometry"]], hifld_pool).assign(utility_mask="hifld"),
+        ],
+        ignore_index=True,
+    )
+    knn = knn.merge(taz[["TAZ", "parent_ba"]], on="TAZ", how="left")
+    knn["TAZ"] = knn["TAZ"].astype(int)
+    knn["substation_id"] = knn["substation_id"].astype(str)
+    knn.to_csv(C.TAZ_TO_SUBSTATION_KNN_CSV, index=False)
+    per_taz = knn.groupby("TAZ")["weight"].agg(["size", "sum"])
+    print(
+        f"Wrote {C.TAZ_TO_SUBSTATION_KNN_CSV} ({len(knn)} rows, {len(per_taz)} TAZs, "
+        f"mean {per_taz['size'].mean():.2f} substations/TAZ, "
+        f"weight sums {per_taz['sum'].min():.6f}-{per_taz['sum'].max():.6f})"
+    )
 
 
 if __name__ == "__main__":

@@ -42,15 +42,18 @@ the multi-day SOC-aware charging simulation. Vehicles are assigned heterogeneous
 
 The California aggregate case uses approximately 2.5 million light-duty EVs, 35 miles/day, 0.3 kWh/mile, and charging-energy shares of 68\% residential L1/L2, 4\% workplace L2, 8\% public L2, and 20\% DC fast charging \cite{nrel_2030charging}. Annual or representative-week charging energy is also accumulated by TAZ. Home charging is assigned to the vehicle's home TAZ, while work and public charging are assigned using destination proxies until trip-level destinations are fully integrated. The aggregate balancing-area charging curve is therefore preserved, but a second spatial allocation layer disaggregates it within California.
 
-For the meso-grid layer, each TAZ $i$ is represented by its geographic centroid $c_i$. Each centroid is assigned to the nearest candidate substation $s$ using great-circle or projected network distance:
+For the meso-grid layer, charging demand reaches a substation through the distribution structure rather than by proximity, following the allocation chain of \cite{li_impact_2024}. Each TAZ $i$ is first split across the 2010 census blocks $b$ it contains, using block population shares for home charging and LODES workplace-jobs shares for workplace and public charging, renormalised within the TAZ:
 \[
-s(i)=\arg\min_{s\in S} dist(c_i,c_s).
+\alpha^{H}_{b}=\frac{\mathrm{pop}_b}{\sum_{b'\in i}\mathrm{pop}_{b'}},
+\qquad
+\alpha^{W}_{b}=\frac{\mathrm{jobs}_b}{\sum_{b'\in i}\mathrm{jobs}_{b'}}.
 \]
-Hourly EV demand at each substation is then:
+Each block is then assigned to a distribution feeder $f(b)$: where the block polygon meets a feeder line, it takes the feeder with the longest intersection; blocks meeting no feeder fall back to the nearest feeder. Because PG\&E \texttt{FeederDetail} and SCE \texttt{Distribution\_circuits} both name each feeder's parent substation, the final hop $s(f)$ requires no geometry. Hourly EV demand at each substation is
 \[
-L^{EV}_{s,t}=\sum_{i:s(i)=s} L^{EV}_{i,t}.
+L^{EV}_{s,t}=\sum_{i}\;\sum_{\substack{b\in i\\ s(f(b))=s}}
+\left(\alpha^{H}_{b}L^{EV,H}_{i,t}+\alpha^{W}_{b}L^{EV,W}_{i,t}\right).
 \]
-This nearest-substation rule is a screening proxy rather than a feeder-boundary model. If utility service territories, feeder maps, or substation service polygons become available, they will replace the nearest-centroid assignment. Supply-side resources are mapped consistently: California generators, imports, and storage candidates are connected either to their observed grid node when location data are available or to the nearest meso-grid substation/interconnection proxy. This creates a second California delivery layer nested within the broader balancing-area dispatch model.
+Applied to 710{,}145 California blocks and 7{,}298 PG\&E and SCE feeders, 53\% of blocks are assigned by intersection and the remainder by nearest feeder; 99\% of PG\&E and 91\% of SCE blocks resolve to a substation present in the model. SDG\&E publishes equivalent data under the same CPUC mandate but from a separate portal, so its territory still uses the nearest-substation fallback. Supply-side resources are mapped consistently: California generators, imports, and storage candidates are connected either to their observed grid node when location data are available or to the nearest meso-grid substation/interconnection proxy. This creates a second California delivery layer nested within the broader balancing-area dispatch model.
 
 \begin{figure}[htbp]
   \centering
@@ -71,14 +74,11 @@ The optimization framework minimizes total electricity network expenditures—en
 \end{equation}
 where $T$, $R$, and $P$ represent the sets of time steps $t$, regions $r$, and policies $p$, while $\Theta(A, r)$ and $\Psi(\Lambda, i, j)$ define the assets $a$ and transmission lines $\lambda$ across network edges $E$. The operational decision variables $X$ balance regional shortfall ($x^{sr}_t$), wastage ($x^{wr}_t$), compliance slacks ($x^{cp}_t$), gross generation ($x^{ga}_t$), consumption ($x^{ea}_t$), and transmission line flows ($x^{t\lambda}_t$), while strategic variables $Z$ dictate asset ($z^{ia}$) and line ($z^{i\lambda}$) capacity expansion according to unit cost and penalty parameters $c$. This formulation is solved subject to fundamental operational constraints: regional network power balance, policy targets (e.g., Renewables Portfolio Standards), producer limits (installed capacities and maximum ramp rates), non-dispatchable load profiles, transmission capacity limits, and energy storage inventory bounds ($SOC_{b,t} = SOC_{b,t-1} + \eta_c c^{BESS}_{b,t} - d^{BESS}_{b,t}/\eta_d$). To isolate consequential impacts, a directional capacity floor constraint ($z^{ia|EV} \geq z^{ia|Base} \ \forall a \in \{\text{solar, wind, storage}\}$) prevents baseline capacity additions from being replaced, ensuring any new infrastructure is strictly attributable to the introduced EV load. Total consequential emissions ($\Delta E$) are subsequently quantified by multiplying the resulting hourly generation deltas by plant-specific operational carbon intensities ($EF_a$), formalized as $\Delta E = \sum_{t \in T} \sum_{r \in R} \sum_{a \in \Theta(A, r)} \left( x^{ga|EV}_{t,a} - x^{ga|Base}_{t,a} \right) \cdot EF_a$.
 
-To expand this balancing-area logic across the WECC network and insert the California substation layer for meso-grid analysis, a simplified DC-flow formulation is appended:
-\[
-f_{\ell,t}=b_{\ell}(\theta_{i,t}-\theta_{j,t}),
-\]
+To expand this balancing-area logic across the WECC network and insert the California substation layer for meso-grid analysis, transmission is represented as capacity-constrained directed transfers, that is, a net-transfer-capacity (NTC) or ``pipe-flow'' formulation:
 \[
 -\bar F_{\ell}-z^T_{\ell} \leq f_{\ell,t} \leq \bar F_{\ell}+z^T_{\ell},
 \]
-where $f_{\ell,t}$ is line flow, $b_{\ell}$ is susceptance, $\theta_{i,t}$ and $\theta_{j,t}$ are voltage angles, $\bar F_{\ell}$ is existing transfer capacity, and $z^T_{\ell}$ is optional line expansion.
+where $f_{\ell,t}$ is line flow, $\bar F_{\ell}$ is existing transfer capacity, and $z^T_{\ell}$ is optional line expansion. Each corridor is implemented as two opposing directed arcs, so flow direction is endogenous. This is a linear surrogate for the angle-based DC formulation $f_{\ell,t}=b_{\ell}(\theta_{i,t}-\theta_{j,t})$, chosen because it keeps the 8{,}760-hour co-optimization of dispatch and capacity a linear program at substation resolution. Pipe-flow permits transfers that a full DC model would forbid through Kirchhoff's voltage law, so reported congestion is a lower bound on physical congestion. Angle-based DC OPF remains future work.
 
 At the balancing-area level, $n$ denotes regional GOOD nodes. Within California, $n$ can also denote substation-level meso-grid nodes produced by the TAZ-to-substation assignment. Nodal power balance is:
 \[

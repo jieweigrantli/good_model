@@ -10,7 +10,9 @@ Horizons
                         four_week succeeds; coded as the primary production path.
   weekly                four separate 168 h solves (legacy screening).
 
-Gurobi: barrier (Method=2, Crossover=0), NodefileStart, MPS I/O.
+Gurobi: barrier (Method=2), NodefileStart, MPS I/O with duals disabled
+(importing duals makes the solver interface build a {ConstrName: Pi} dict over
+all ~14M constraints, which MemoryErrors at this model size).
 
 Run from repository root. Does not launch the 8760 LP unless --horizon 8760.
 """
@@ -96,6 +98,20 @@ def _num_hours(horizon: str) -> int:
     return C.horizon_hours("weekly" if horizon == "weekly" else horizon)
 
 
+def _graph_fingerprint() -> str:
+    """Short content hash of the nested graph, to tag results by model build."""
+    import hashlib
+
+    path = C.MESO_DIR / "wecc_ca_nested_graph.json"
+    if not path.is_file():
+        return "unknown"
+    h = hashlib.sha1()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()[:12]
+
+
 def _solver_kw(horizon: str, scenario: str, log_path: Path | None = None, crossover: int = 0) -> dict:
     import ev_charging_project.config as config
 
@@ -117,17 +133,38 @@ def _solver_kw(horizon: str, scenario: str, log_path: Path | None = None, crosso
     # actually certifying a tight solution. Loosen from Gurobi's 1e-8/1e-6
     # defaults slightly given the coefficient spread, but keep them explicit
     # so a failure to meet them is visible rather than silently accepted.
-    opts["BarConvTol"] = 1e-7
-    opts["OptimalityTol"] = 1e-6
+    # ASTR_BARCONVTOL loosens this for a two-stage sizing pass. On the 672 h
+    # model the barrier stalls at a relative gap of ~3e-4 and reports
+    # "Sub-optimal termination": primal residual and complementarity both
+    # plateau for the last ~15 iterations rather than falling, so more time
+    # does not help. At 1e-7 that stall is a failure and Gurobi hands the
+    # point to crossover, which then cannot finish (2.27M iterations, 4 h, no
+    # convergence). At a tolerance the model can actually meet, barrier
+    # terminates optimal in ~6 min and the build it reports is good to a few
+    # parts in ten thousand -- ample for deciding capacity, which is all
+    # stage 1 is asked for. Stage 2 keeps the tight default for dispatch.
+    opts["BarConvTol"] = float(os.environ.get("ASTR_BARCONVTOL", 1e-7))
+    # Loosened from 1e-6 after S1 and S3 both hit the 2 h limit inside
+    # crossover on the June week. Most of that time went into grinding from an
+    # already near-optimal point -- S1's objective moved 0.1% over its final
+    # 40 minutes while dual infeasibility oscillated rather than fell. Dual
+    # precision is not something this model consumes (duals are disabled to
+    # keep memory down), so trading a decimal place of it for termination is
+    # the right side of the trade.
+    opts["OptimalityTol"] = 1e-5
     opts["FeasibilityTol"] = 1e-6
+    # S3 scales CA transmission and BA interfaces by 10x, which widens an
+    # already wide coefficient range; its crossover reported status "Numeric"
+    # rather than "Sub-Optimal", i.e. numerical trouble and not merely a
+    # shortage of time. Raise the numerical effort for that scenario.
+    if scenario == "S3":
+        opts["NumericFocus"] = 2
     if log_path is not None:
         opts["LogFile"] = str(log_path)
     if horizon == "8760":
         opts["TimeLimit"] = 24 * 3600
-    elif scenario == "S2":
-        opts["TimeLimit"] = 7200
     else:
-        opts["TimeLimit"] = 7200
+        opts["TimeLimit"] = float(os.environ.get("ASTR_TIME_LIMIT_S", 4 * 3600))
     return kw
 
 
@@ -313,6 +350,151 @@ def _load_baseline_expansions(path: Path) -> dict:
     return {(region, handle): val for region, handle, val in payload}
 
 
+def _disable_capex_nlg(nlg: dict, prescribe_bess: bool = True) -> dict:
+    """Close every CAPEX decision: dispatch the as-built system only.
+
+    Every extensible asset in WEC.json carries ``installed_capacity = 0`` and
+    unlimited ``capex_capacity``, so switching CAPEX off removes all 799 of
+    them -- the 16 BA-level ``optional_storage_*`` above all, which the sizing
+    pass was building out to 7.3 GW in S0 and 12.5 GW in S3. What survives is
+    the genuinely installed fleet: 4.22 GW of pumped hydro and 0.60 GW of
+    battery, plus all real generation. That is the point of the mode -- ask
+    what the grid as it stands does with the demand, with no investment
+    allowed to paper over a shortage.
+
+    S2's substation batteries are pure CAPEX too (``installed_capacity = 0``,
+    everything in ``capex_capacity``), so a blanket switch-off would make S2
+    byte-identical to S1 and force M_BESS to zero by construction. With
+    ``prescribe_bess`` their per-site cap is moved into ``installed_capacity``
+    instead, giving a fleet fixed exogenously by the rule already in
+    ``09_01::candidate_bess`` (half the substation's mean EV peak, 1 MW floor).
+    M_BESS then measures the value of a prescribed fleet rather than of an
+    optimally-sized one.
+
+    Removing the 16 optional_storage assets also removes the 16 dense columns
+    the four-week barrier log reported. A capex variable sits in every hour's
+    capacity constraint, which is the classic pathology for Cholesky
+    factorisation, and the four-week solve stalled with exactly that count.
+    """
+    g = deepcopy(nlg)
+    n_off = n_bess = 0
+    bess_w = 0.0
+    for node in g.get("nodes") or []:
+        for handle, asset in (node.get("assets") or {}).items():
+            if not asset.get("extensible"):
+                continue
+            headroom = float(asset.get("capex_capacity") or 0.0)
+            if prescribe_bess and handle.startswith("bess_") and np.isfinite(headroom) and headroom > 0:
+                asset["installed_capacity"] = float(asset.get("installed_capacity") or 0.0) + headroom
+                bess_w += headroom
+                n_bess += 1
+            asset["capex_capacity"] = 0.0
+            asset["extensible"] = False
+            n_off += 1
+    msg = f"  CAPEX disabled on {n_off} assets (as-built dispatch only)"
+    if n_bess:
+        msg += f"; {n_bess} substation BESS prescribed at {bess_w / 1e6:,.0f} MW"
+    print(msg)
+    return g
+
+
+def _extract_capex_decisions(solution, nlg: dict) -> dict:
+    """TOTAL built capacity for every extensible asset, keyed (region, handle).
+
+    Deliberately broader than ``ev_charging_project.utils.extract_capex_expansion``,
+    which only matches handles beginning ``optional_``. The substation batteries
+    scenario S2 adds are named ``bess_<hub>`` and that filter misses them
+    entirely, so a two-stage run built on it would silently re-decide every
+    battery in each stage-2 week instead of holding stage 1's build fixed --
+    which is precisely the thing two-stage exists to prevent.
+
+    Records the absolute total (``installed_capacity + capex``) rather than the
+    solved ``capex`` delta, because that delta is measured against whatever
+    baseline the scenario was handed and the baseline is not the same for every
+    scenario. S1-S3 run with ``_apply_capex_floor_nlg`` having already folded
+    S0's build into ``installed_capacity``, so their ``capex`` is only the
+    increment above S0. Stage 2 rebuilds each graph from the unflooded base, so
+    replaying a delta there would drop the floored-in capacity: in the first
+    stage-1 run S0 recorded 7,220 MW of storage and S1 recorded 1,261 MW, which
+    read as S1 building less storage than S0 despite serving strictly more
+    load. Absolute totals mean the same number regardless of which baseline
+    produced them.
+    """
+    base_ic = {
+        (n["id"], h): float(a.get("installed_capacity") or 0.0)
+        for n in (nlg.get("nodes") or [])
+        for h, a in (n.get("assets") or {}).items()
+        if a.get("extensible")
+    }
+    out: dict = {}
+    for region, node in solution._node.items():
+        for handle, asset in (node.get("assets") or {}).items():
+            if (region, handle) not in base_ic:
+                continue
+            v = asset.get("capex", [0])
+            if isinstance(v, (list, tuple)):
+                w = float(v[0]) if v else 0.0
+            else:
+                w = float(v)
+            out[(region, handle)] = max(0.0, base_ic[(region, handle)] + w)
+    return out
+
+
+def _save_stage1_capex(path: Path, scen: str, decisions: dict) -> None:
+    """Merge one scenario's stage-1 build into the shared stage-1 capex file.
+
+    Keyed by scenario because the build is scenario-specific: S2 sizes BESS
+    that S1 does not have at all, and S3's relaxed transmission changes where
+    generation is worth adding.
+    """
+    payload = {}
+    if path.is_file():
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    payload[scen] = [[region, handle, val] for (region, handle), val in decisions.items()]
+    C.ensure_dir(path.parent)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _load_stage1_capex(path: Path) -> dict:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return {
+        scen: {(region, handle): val for region, handle, val in rows}
+        for scen, rows in payload.items()
+    }
+
+
+def _fix_capex_nlg(nlg: dict, decisions: dict) -> dict:
+    """Stage 2: hold stage 1's build fixed rather than re-deciding it per week.
+
+    Every extensible asset is closed out. Assets stage 1 built get their
+    ``installed_capacity`` *set* to stage 1's total -- set, not incremented,
+    because ``_extract_capex_decisions`` records the absolute built capacity.
+    Assets stage 1 declined, and any asset stage 1 never saw, are frozen at
+    their installed base. Leaving even a few assets open would let each seasonal
+    week buy its own capacity, so the four weeks would no longer describe one
+    consistent system and their sum would not be an annual result.
+    """
+    g = deepcopy(nlg)
+    n_built = n_frozen = 0
+    built_w = 0.0
+    for node in g.get("nodes") or []:
+        for handle, asset in (node.get("assets") or {}).items():
+            if not asset.get("extensible"):
+                continue
+            built = decisions.get((node["id"], handle))
+            asset["capex_capacity"] = 0.0
+            asset["extensible"] = False
+            if built:
+                asset["installed_capacity"] = float(built)
+                built_w += float(built)
+                n_built += 1
+            else:
+                n_frozen += 1
+    print(f"  CAPEX fixed from stage 1: {n_built} assets held at {built_w / 1e6:,.0f} MW, "
+          f"{n_frozen} frozen at base")
+    return g
+
+
 def _congestion_ranked_bess_hubs(line_flows_csv: Path, network_json: Path, frac: float) -> set[str]:
     """Top ``frac`` of EV-positive substations, ranked by incident-line congestion.
 
@@ -389,6 +571,10 @@ def run_horizon(
     bess_top_n: int = 0,
     bess_congestion_frac: float | None = None,
     crossover: int | str = "auto",
+    only_ba: set[str] | None = None,
+    stage1_capex_out: Path | None = None,
+    fix_capex_from: Path | None = None,
+    no_capex: bool = False,
 ) -> pd.DataFrame:
     import ev_charging_project.config as config
     from ev_charging_project.utils import prepare_graph, extract_capex_expansion, solution_to_dict
@@ -396,6 +582,8 @@ def run_horizon(
     from good.reload import deep_reload
 
     tag = week["name"] if week is not None else horizon
+    if only_ba:
+        tag = f"{tag}_{'+'.join(sorted(only_ba))}"
     out_root = C.ensure_dir(C.ASTR_RESULTS_DIR / tag)
     n_hours = _num_hours(horizon) if horizon != "weekly" else C.NUM_HOURS_WEEK
 
@@ -414,24 +602,11 @@ def run_horizon(
 
     network_kw = dict(config.NETWORK_KW)
     network_kw["steps"] = (0, n_hours)
-    # Real operating costs run ~2e-13-1e-8 $/J. The prior shortfall_cost=1e3
-    # against config.py's wastage_cost=1e-6 default was a 1e9 ratio on top of
-    # an already wide capacity-coefficient range, which is a scaling hazard
-    # independent of topology. Keep shortfall strongly penalized relative to
-    # the priciest real generator but within a narrower band of the rest of
-    # the cost coefficients.
-    #
-    # wastage_cost was previously dropped to 1e-9 (near-free) purely to
-    # narrow the shortfall/wastage coefficient ratio; that gave the solver
-    # almost no reason to avoid dumping surplus energy even where a real
-    # delivery path existed (measured: 2,500+ GWh of wastage over 4 weeks on
-    # the corrected topology). Set it to a real, if lighter, disincentive:
-    # 100x the priciest real generator's operating cost (~1e-8 $/J) but 100x
-    # cheaper than shortfall, so unmet demand still costs strictly more than
-    # curtailing surplus (the standard modeling convention), while wastage
-    # is no longer effectively free.
-    network_kw["shortfall_cost"] = 1e-2
-    network_kw["wastage_cost"] = 1e-4
+    # shortfall_cost / wastage_cost are deliberately NOT overridden here any
+    # more. They are benchmark-calibrated in ev_charging_project/config.py
+    # (VOLL $10,000/MWh and curtailment $1/MWh, both expressed in $/J), so
+    # config.py is the single source of truth; see
+    # docs/cost_calibration_methodology.tex.
 
     # Apply prepare_graph flags on a throwaway NX graph then... we apply in nlg after nest.
     # prepare_graph expects NetworkX; apply after from_nlg inside _solve, so replicate
@@ -449,7 +624,11 @@ def run_horizon(
     compact_rows = []
     baseline_capex_path = out_root / "baseline_capex_expansion.json"
     baseline_expansions = None
-    if "S0" not in scales and baseline_capex_path.is_file():
+    stage1_capex = _load_stage1_capex(fix_capex_from) if fix_capex_from else None
+    if stage1_capex is not None:
+        print(f"  Stage 2: CAPEX fixed from {fix_capex_from} "
+              f"({', '.join(sorted(stage1_capex))})")
+    if not no_capex and stage1_capex is None and "S0" not in scales and baseline_capex_path.is_file():
         baseline_expansions = _load_baseline_expansions(baseline_capex_path)
         print(f"  Loaded cached baseline CAPEX floor from {baseline_capex_path} ({len(baseline_expansions)} entries)")
 
@@ -475,8 +654,19 @@ def run_horizon(
             capacity_scale_interface=float(sc["interface"]),
             bess_top_n=bess_top_n,
             bess_hub_override=scen_bess_override,
+            only_ba=only_ba,
         )
-        if baseline_expansions and scen != "S0":
+        if no_capex:
+            nlg = _disable_capex_nlg(nlg, prescribe_bess=True)
+        elif stage1_capex is not None:
+            if scen not in stage1_capex:
+                raise SystemExit(
+                    f"Stage 2 asked for {scen} but {fix_capex_from} has no stage-1 build "
+                    f"for it (has: {', '.join(sorted(stage1_capex))}). Run stage 1 for "
+                    f"{scen} first."
+                )
+            nlg = _fix_capex_nlg(nlg, stage1_capex[scen])
+        elif baseline_expansions and scen != "S0":
             nlg = _apply_capex_floor_nlg(nlg, baseline_expansions)
 
         scen_out_name = scen
@@ -544,7 +734,14 @@ def run_horizon(
         try:
             solver_kw = _solver_kw(horizon, scen, log_path=scen_dir / "gurobi.log", crossover=scen_crossover)
             solution, obj = _solve_nlg(nlg, policies, network_kw, solver_kw, f"{tag}-{scen}")
-            if scen == "S0":
+            if stage1_capex_out is not None:
+                decisions = _extract_capex_decisions(solution, nlg)
+                _save_stage1_capex(stage1_capex_out, scen, decisions)
+                built_w = sum(v for v in decisions.values() if v)
+                print(f"  stage-1 build: {sum(1 for v in decisions.values() if v)}"
+                      f"/{len(decisions)} extensible assets, {built_w / 1e6:,.0f} MW"
+                      f" total capacity -> {stage1_capex_out}")
+            if scen == "S0" and stage1_capex is None and not no_capex:
                 baseline_expansions = extract_capex_expansion(solution, good.graph.graph_from_nlg(nlg))
                 _save_baseline_expansions(baseline_capex_path, baseline_expansions)
             gen = _generation_totals(solution)
@@ -613,12 +810,34 @@ def run_horizon(
     if compact_rows:
         C.ensure_dir(C.RESULTS_DIR)
         compact = pd.DataFrame(compact_rows)
+        # Stamp every row with the network build that produced it.
+        #
+        # The upsert below deliberately preserves rows for scenarios this
+        # invocation did not run, so a subset run does not wipe the rest. But
+        # that also preserves rows from an *older model*, and those are not
+        # comparable: after the topology and demand rebuild, a retained S1 row
+        # showed a lower objective than a freshly solved S0, which is
+        # impossible when S1 serves strictly more demand. Without a stamp the
+        # only clue was an n_lines mismatch.
+        compact["graph_build"] = _graph_fingerprint()
+        compact["built_at"] = pd.Timestamp.now().isoformat(timespec="seconds")
         out_pq = C.RUNS_8760_PARQUET if horizon == "8760" else C.RUNS_FOUR_WEEK_PARQUET
         if horizon == "weekly":
             out_pq = C.RESULTS_DIR / "S0_S3_weekly_runs.parquet"
         if out_pq.is_file():
             prev = pd.read_parquet(out_pq)
             prev = prev[~prev["tag"].eq(tag) | ~prev["scenario"].isin(compact["scenario"])]
+            if "graph_build" in prev.columns and len(prev):
+                stale = prev[prev["graph_build"] != compact["graph_build"].iloc[0]]
+                if len(stale):
+                    print(
+                        f"  WARNING: {len(stale)} retained row(s) come from an earlier "
+                        f"network build and are NOT comparable with this run: "
+                        + ", ".join(sorted(set(stale["tag"] + "/" + stale["scenario"])))
+                    )
+            elif len(prev):
+                print(f"  WARNING: {len(prev)} retained row(s) predate build stamping "
+                      f"and are NOT comparable with this run")
             compact = pd.concat([prev, compact], ignore_index=True)
         compact.to_parquet(out_pq, index=False)
         print(f"Wrote {out_pq}")
@@ -633,6 +852,13 @@ def main() -> None:
         choices=["four_week", "8760", "weekly"],
         help="four_week = 4 seasonal weeks in one LP (default test). "
         "8760 = full year (do not run until four_week is feasible).",
+    )
+    parser.add_argument(
+        "--only-ba",
+        nargs="*",
+        default=None,
+        help="Nest only these BAs at substation level; the rest stay copper plates. "
+             "Use for framework tests: P_cong from a restricted run is a lower bound.",
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-existing", action="store_true")
@@ -665,7 +891,37 @@ def main() -> None:
         "Crossover=1 once EV load makes the solution much denser. Pass 0 or 1 to force that "
         "value for every scenario instead.",
     )
+    parser.add_argument(
+        "--stage1-capex-out",
+        default=None,
+        help="Two-stage sizing pass. Write the solved capacity of every extensible asset, "
+        "per scenario, to this JSON. Pair with --horizon four_week --crossover 0: the "
+        "barrier alone settles the build in ~6 min, where pushing the same model to a "
+        "vertex does not finish in 4 h.",
+    )
+    parser.add_argument(
+        "--fix-capex-from",
+        default=None,
+        help="Two-stage dispatch pass. Hold every extensible asset at the build in this "
+        "JSON (from --stage1-capex-out) instead of re-deciding it. Pair with "
+        "--horizon weekly --crossover 1: each seasonal week is a quarter the size and "
+        "does reach a vertex, and all four share one consistent build.",
+    )
+    parser.add_argument(
+        "--no-capex",
+        action="store_true",
+        help="Dispatch the as-built system: close every CAPEX decision so no new "
+        "capacity can be built. Keeps the 4.22 GW of installed pumped hydro and "
+        "0.60 GW of battery; drops the 799 optional assets. S2's substation "
+        "batteries are prescribed at their per-site cap instead of being built, "
+        "otherwise S2 would collapse into S1.",
+    )
     args = parser.parse_args()
+
+    if args.no_capex and (args.stage1_capex_out or args.fix_capex_from):
+        raise SystemExit("--no-capex forbids any CAPEX decision, so the two-stage flags do not apply.")
+    if args.stage1_capex_out and args.fix_capex_from:
+        raise SystemExit("--stage1-capex-out and --fix-capex-from are the two stages; run them separately.")
 
     if args.horizon == "8760":
         print(
@@ -683,6 +939,24 @@ def main() -> None:
     else:
         with open(C.SCENARIO_SCALES_JSON, encoding="utf-8") as fh:
             scales = json.load(fh)
+
+    # S0R is the relaxed-transmission counterfactual with no EV. It exists to
+    # decontaminate P_cong. Comparing S3 against S0 conflates two effects:
+    # relaxing transmission lets the network deliver *all* load better, not
+    # just EV load, and in the PG&E June week the base load dwarfs the EV load
+    # (5,628 GWh vs 156 GWh), so the relaxation credit swamps the EV signal.
+    # With S0R,
+    #     P_cong = (E_S1 - E_S0) - (E_S3 - E_S0R)
+    # differences each EV effect against its own transmission regime, so the
+    # non-EV relaxation benefit cancels instead of being charged to EVs.
+    # It is off by default because it is a fifth full solve; request it with
+    # --scenarios S0R.
+    optional_scales = {
+        "S0R": {"meso": 10.0, "interface": 10.0, "bess": False, "ev": False},
+    }
+    for key, spec in optional_scales.items():
+        if args.scenarios and key in args.scenarios and key not in scales:
+            scales[key] = spec
 
     if args.scenarios:
         scales = {k: v for k, v in scales.items() if k in args.scenarios}
@@ -731,6 +1005,12 @@ def main() -> None:
                 save_json=args.save_json,
                 week=week,
                 bess_top_n=args.bess_top_n,
+                bess_congestion_frac=args.bess_congestion_frac,
+                crossover=args.crossover,
+                only_ba=set(args.only_ba) if args.only_ba else None,
+                stage1_capex_out=Path(args.stage1_capex_out) if args.stage1_capex_out else None,
+                fix_capex_from=Path(args.fix_capex_from) if args.fix_capex_from else None,
+                no_capex=args.no_capex,
             )
     else:
         run_horizon(
@@ -742,6 +1022,10 @@ def main() -> None:
             bess_top_n=args.bess_top_n,
             bess_congestion_frac=args.bess_congestion_frac,
             crossover=args.crossover,
+            only_ba=set(args.only_ba) if args.only_ba else None,
+            stage1_capex_out=Path(args.stage1_capex_out) if args.stage1_capex_out else None,
+            fix_capex_from=Path(args.fix_capex_from) if args.fix_capex_from else None,
+            no_capex=args.no_capex,
         )
     print(f"\nResults under {C.ASTR_RESULTS_DIR}")
 

@@ -71,6 +71,9 @@ CEC_BALANCING_AUTH_GPKG = DATA_DIR / "cec" / "ca_balancing_authorities.gpkg"
 
 # Canonical ASTR meso artifacts
 TAZ_TO_SUBSTATION_CSV = MAPPING_DIR / "taz_to_substation.csv"
+# Long format (TAZ, substation_id, weight, rank, ...): each TAZ's load split
+# across its k nearest substations; weights sum to 1 per TAZ.
+TAZ_TO_SUBSTATION_KNN_CSV = MAPPING_DIR / "taz_to_substation_knn.csv"
 TAZ_HOURLY_EV_8760 = MESO_DIR / "taz_hourly_ev_8760.parquet"
 SUB_HOURLY_LOADS_8760 = MESO_DIR / "substation_hourly_loads_8760.parquet"
 CA_NETWORK_JSON = MESO_DIR / "ca_substation_network.json"
@@ -114,6 +117,15 @@ BA_CENTROIDS_LL = {
 }
 
 # Named CA intertie / path attachment points (lon, lat WGS84)
+# Named WECC transfer paths, with their published simultaneous transfer
+# ratings (WECC Path Rating Catalog / CAISO transmission planning):
+#   Path 66 (COI, Malin)        4,800 MW N->S
+#   Path 15 (Los Banos-Midway)  5,400 MW N->S, split across its two terminals
+#   Path 26 (Midway-Vincent)    4,000 MW N->S
+#   Palo Verde - Devers         2,800 MW
+# A flat 500 MW was previously used for all five, which understated the
+# north-south paths by an order of magnitude and made CA-internal transfer
+# look far more constrained than it is.
 INTERTIE_POINTS = {
     "Path66_Malin": {
         "lon": -121.55,
@@ -121,6 +133,7 @@ INTERTIE_POINTS = {
         "parent_ba": "WEC_CALN",
         "remote_ba": "WECC_PNW",
         "path": "Path 66 / COI",
+        "rating_W": 4800e6,
     },
     "Path15_LosBanos": {
         "lon": -120.85,
@@ -128,6 +141,7 @@ INTERTIE_POINTS = {
         "parent_ba": "WEC_CALN",
         "remote_ba": "WECC_SCE",
         "path": "Path 15",
+        "rating_W": 2700e6,
     },
     "Path15_Midway": {
         "lon": -119.60,
@@ -135,6 +149,7 @@ INTERTIE_POINTS = {
         "parent_ba": "WEC_CALN",
         "remote_ba": "WECC_SCE",
         "path": "Path 15",
+        "rating_W": 2700e6,
     },
     "Path26_Vincent": {
         "lon": -118.38,
@@ -142,6 +157,7 @@ INTERTIE_POINTS = {
         "parent_ba": "WECC_SCE",
         "remote_ba": "WEC_CALN",
         "path": "Path 26",
+        "rating_W": 4000e6,
     },
     "PaloVerde_Devers": {
         "lon": -116.57,
@@ -149,6 +165,7 @@ INTERTIE_POINTS = {
         "parent_ba": "WECC_SCE",
         "remote_ba": "WECC_AZ",
         "path": "Palo Verde",
+        "rating_W": 2800e6,
     },
 }
 
@@ -500,3 +517,99 @@ def weighted_sample(values, weights, n, seed=None, replace=True):
     w = np.asarray(weights, dtype=float)
     w = w / w.sum()
     return rng.choice(np.asarray(values), size=n, replace=replace, p=w)
+
+def published_substation_ratings():
+    """Substation step-down ratings that a utility actually publishes.
+
+    PG&E gives per-bank ratings in the GRIP distribution-forecast layer; SCE
+    gives substation ratings in GNA and, failing that, projected load plus
+    remaining capacity in ICA. Shared by 08_03 (to detect allocation
+    artefacts) and 08_06 (to build the model's transformer limits), so both
+    agree on what is measured and what is derived.
+    """
+    import geopandas as gpd
+    import numpy as np
+    import pandas as pd
+
+    frames = []
+
+    df_path = grip_layer("DFSubstationArea___PeakFacilityLoadingPercent")
+    if df_path.is_file():
+        import pyogrio
+
+        df = pyogrio.read_dataframe(str(df_path), read_geometry=False)
+        df["facilityra"] = pd.to_numeric(df["facilityra"], errors="coerce")
+        pge = (
+            df.dropna(subset=["facilityra"])
+            .groupby("substation", as_index=False)["facilityra"]
+            .sum()
+            .rename(columns={"substation": "substation_id", "facilityra": "mva"})
+        )
+        pge["substation_id"] = pge["substation_id"].astype(str)
+        pge["rating_W"] = pge["mva"] * 1e6
+        frames.append(pge[["substation_id", "rating_W"]])
+
+    sce_dir = DATA_DIR / "ica" / "sce"
+    pts = sce_dir / "ica_substations_geom.gpkg"
+    if pts.is_file() and HIFLD_SUBSTATIONS_GPKG.is_file():
+        p = gpd.read_file(pts).to_crs(CA_ALBERS_CRS)
+        hif = gpd.read_file(HIFLD_SUBSTATIONS_GPKG).to_crs(CA_ALBERS_CRS)
+        hif["substation_id"] = "HIFLD_" + hif["OBJECTID"].astype(str)
+        name_col = pick_column(p.columns, ("SUB_NAME", "sub_name", "NAME"))
+        j = gpd.sjoin_nearest(
+            p[[name_col, "geometry"]], hif[["substation_id", "geometry"]],
+            how="left", distance_col="d",
+        )
+        j = j[j["d"] <= 2000.0]
+        lut = {str(r[name_col]).strip().upper(): r["substation_id"] for _, r in j.iterrows()}
+
+        rows: dict[str, float] = {}
+        gna = sce_dir / "gna_substations.parquet"
+        if gna.is_file():
+            g = pd.read_parquet(gna)
+            g["rating"] = pd.to_numeric(g.get("rating"), errors="coerce")
+            for _, r in g.dropna(subset=["rating"]).iterrows():
+                nid = lut.get(str(r.get("substation_name", "")).strip().upper())
+                if nid and r["rating"] > 0:
+                    rows[nid] = max(rows.get(nid, 0.0), float(r["rating"]) * 1e6)
+        ica = sce_dir / "substations.parquet"
+        if ica.is_file():
+            s_ = pd.read_parquet(ica)
+            cap = (
+                pd.to_numeric(s_.get("PROJECTED_LOAD"), errors="coerce").fillna(0)
+                + pd.to_numeric(s_.get("MAX_REMAIN_CAP"), errors="coerce").fillna(0)
+            ) * 1e6
+            for nm, cv in zip(s_.get("SUB_NAME", []), cap):
+                nid = lut.get(str(nm).strip().upper())
+                if nid and cv > 0 and nid not in rows:
+                    rows[nid] = float(cv)
+        if rows:
+            frames.append(pd.DataFrame({"substation_id": list(rows),
+                                        "rating_W": list(rows.values())}))
+
+    if not frames:
+        return pd.DataFrame(columns=["substation_id", "rating_W"])
+    return pd.concat(frames, ignore_index=True).drop_duplicates("substation_id")
+
+
+def sce_substation_nodes():
+    """SCE published substation name (upper-cased) -> model node id.
+
+    Matched by location rather than name: SCE calls a yard "Universal
+    69/12 kV" where HIFLD calls it "Universal City".
+    """
+    import geopandas as gpd
+
+    pts = DATA_DIR / "ica" / "sce" / "ica_substations_geom.gpkg"
+    if not (pts.is_file() and HIFLD_SUBSTATIONS_GPKG.is_file()):
+        return {}
+    p = gpd.read_file(pts).to_crs(CA_ALBERS_CRS)
+    hif = gpd.read_file(HIFLD_SUBSTATIONS_GPKG).to_crs(CA_ALBERS_CRS)
+    hif["substation_id"] = "HIFLD_" + hif["OBJECTID"].astype(str)
+    name_col = pick_column(p.columns, ("SUB_NAME", "sub_name", "NAME"))
+    j = gpd.sjoin_nearest(
+        p[[name_col, "geometry"]], hif[["substation_id", "geometry"]],
+        how="left", distance_col="d",
+    )
+    j = j[j["d"] <= 2000.0]
+    return {str(r[name_col]).strip().upper(): r["substation_id"] for _, r in j.iterrows()}

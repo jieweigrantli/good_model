@@ -65,22 +65,63 @@ BATTERY_MULT          = 2.1 / (1200 / (4 * 3.6e6))
 # ---------------------------------------------------------------------------
 # Network / solver
 # ---------------------------------------------------------------------------
+# Costs in this model are [$/J]. 1 MWh = 3.6e9 J, so $/MWh = ($/J) * 3.6e9.
+# The generator operating costs carried in the WEC graph are correctly scaled
+# in those terms (nuclear 3.09e-9 $/J = $11.13/MWh; most expensive unit
+# 1.07e-8 $/J = $38.52/MWh), but the shortfall/wastage penalties were not:
+# the previous 1e-3 / 1e-6 defaults correspond to $3.6M/MWh and $3,600/MWh.
+# Together they made up >99.9% of the objective on the 672 h nested LP, left
+# generation cost (which is what sets dispatch, and therefore CO2) at ~0.04%
+# of the objective, and stretched the objective coefficient range across ~11
+# orders of magnitude. See docs/cost_calibration_methodology.tex for the
+# benchmarks and derivations behind the values below.
+_J_PER_MWH = 3.6e9
+
 NETWORK_KW = {
     'verbose': True,
     'steps': STEPS,
     'amortization_period': 31536000 * 20,  # 20 years in seconds
     'time_step': 3600,                     # 1 hour in seconds
     'shortfall_capacity': np.inf,
-    'shortfall_cost': 1e-3,
+    # Value of lost load. $10,000/MWh is GenX's default VOLL and sits in the
+    # lower-middle of the $9,000-$45,000/MWh literature range for developed
+    # economies. Still ~260x the priciest generator, so load is served
+    # whenever it is physically possible to serve it.
+    'shortfall_cost': 10_000 / _J_PER_MWH,   # 2.78e-6 $/J
     'wastage_capacity': np.inf,
-    'wastage_cost': 1e-6,
+    # Curtailment of surplus is conventionally valued at $0/MWh. A strictly
+    # positive value is still needed here as a tie-breaker (a zero cost leaves
+    # flat directions the barrier method smears across), so use $1/MWh -- the
+    # low end of the curtailment range, far below any generator's cost, so it
+    # breaks ties without steering dispatch. $25/MWh (wind PTC opportunity
+    # cost) is the natural alternative for a sensitivity run.
+    'wastage_cost': 1 / _J_PER_MWH,          # 2.78e-10 $/J
+    # Duals are only consumed by visualizations.py (clearing_price); the ASTR
+    # meso pipeline uses primal quantities only. Importing them costs a
+    # name -> value entry per constraint (multi-GB at this model size) and
+    # makes Region.solution() rebuild a dict over every dual, per node.
+    'extract_duals': False,
 }
 
 _NODEFILE_DIR = os.path.abspath('./gurobi_nodefiles')
 
 # solver_io:
-#   'lp'  (default) — Gurobi LP reader, can MemoryError on large models
-#   'mps' — sparse MPS format, lower peak RAM for large sparse LPs
+#   'lp'     (Pyomo default) — Gurobi LP reader, can MemoryError on large models
+#   'mps'    — file-based; Gurobi reads the model back from disk, so gurobipy
+#              defers creating Var/Constr objects until attributes are queried.
+#              GUROBI_RUN then builds {VarName: X} (and, when duals are
+#              imported, {ConstrName: Pi}) dicts and serializes them to a text
+#              .sol file that Pyomo re-parses. That retrieval step is what
+#              MemoryErrors on the ~12M var / ~14M constraint nested LP --
+#              hence extract_duals=False above, which removes the constraint
+#              half of it entirely.
+#   'direct' — builds the model in-process via gurobipy; avoids the name-keyed
+#              dicts and text round-trip on retrieval (with save_results=False),
+#              BUT measured WORSE here: translating the Pyomo model into
+#              gurobipy object-by-object, while holding ComponentMaps of 11.9M
+#              vars and 14.2M constraints plus both model copies, used 24+ GB
+#              and 74+ min *before Gurobi even started solving* on the 672 h
+#              model. Only viable at smaller model sizes.
 SOLVER_KW = {
     'solver': {
         '_name': 'gurobi',
