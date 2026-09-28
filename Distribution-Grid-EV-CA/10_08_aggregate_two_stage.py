@@ -58,7 +58,7 @@ sys.path.insert(0, str(PKG))
 
 import common as C
 
-SCEN_ORDER = ["S0", "S0R", "S1", "S2", "S3"]
+SCEN_ORDER = ["S0", "S0R", "S1", "S2", "S3", "S4"]
 
 
 def _week_tag(season: str, only_ba: set[str] | None) -> str:

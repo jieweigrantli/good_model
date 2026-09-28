@@ -518,6 +518,38 @@ def weighted_sample(values, weights, n, seed=None, replace=True):
     w = w / w.sum()
     return rng.choice(np.asarray(values), size=n, replace=replace, p=w)
 
+def measured_substation_baseload_high():
+    """PG&E's published substation load, per substation per month-hour, in kW.
+
+    Returns columns (substation_id, Month, Hour, baseload_kW) from GRIP's
+    ``SubstationLoadProfile``, using the ``high`` band. ``high`` rather than a
+    midpoint because this feeds an adequacy test: measured against NREL county
+    demand for PG&E territory, ``high`` recovers a 15.59 GW coincident peak
+    against NREL's 20.41 GW and PG&E's real ~20-21 GW, while a midpoint gives
+    13.02 GW and understates by a third.
+
+    ``monthhour`` is formatted ``MM_HH``, and ``subid`` needs zero-padding to
+    five digits to match the rest of the pipeline -- an earlier version of this
+    join lost 271 of 638 substations to unpadded ids.
+    """
+    import pyogrio
+
+    path = grip_layer("SubstationLoadProfile")
+    cols = ["substation_id", "Month", "Hour", "baseload_kW"]
+    if not path.is_file():
+        return pd.DataFrame(columns=cols)
+    d = pyogrio.read_dataframe(
+        str(path), columns=["subid", "monthhour", "high"], read_geometry=False
+    )
+    d["high"] = pd.to_numeric(d["high"], errors="coerce")
+    d = d.dropna(subset=["high"])
+    d["substation_id"] = d["subid"].astype(str).str.strip().str.zfill(5)
+    d["Month"] = d["monthhour"].str[:2].astype(int)
+    d["Hour"] = d["monthhour"].str[3:].astype(int)
+    d["baseload_kW"] = d["high"].clip(lower=0)
+    return d[cols]
+
+
 def published_substation_ratings():
     """Substation step-down ratings that a utility actually publishes.
 

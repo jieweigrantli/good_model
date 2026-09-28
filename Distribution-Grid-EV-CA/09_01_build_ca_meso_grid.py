@@ -122,8 +122,14 @@ def load_substation_nodes() -> gpd.GeoDataFrame:
         gdf = pd.concat([gdf, extra_gdf], ignore_index=True)
         gdf = gpd.GeoDataFrame(gdf, geometry="geometry", crs=C.CA_ALBERS_CRS)
 
-    # Keep stations that appear in the TAZ map plus all GRIP stations (full PGE backbone)
-    keep = set(gdf.loc[gdf["source"] == "grip", "substation_id"]) | needed
+    # Keep stations that appear in the TAZ map, all GRIP stations (full PGE
+    # backbone), and the switchyards of large power plants. The last group
+    # serves no load, so the TAZ test drops them -- see generation_switchyards.
+    keep = (
+        set(gdf.loc[gdf["source"] == "grip", "substation_id"])
+        | needed
+        | generation_switchyards(all_records)
+    )
     gdf = gdf[gdf["substation_id"].isin(keep)].copy()
     gdf = gdf.merge(
         rank[["substation_id", "mean_week_kwh", "mean_peak_kW"]].drop_duplicates("substation_id"),
@@ -307,6 +313,96 @@ def _line_parts(geom):
     if geom.geom_type == "MultiLineString":
         return list(geom.geoms)
     return []
+
+
+# Generation switchyards
+# ---------------------------------------------------------------------------
+# A substation becomes a model node only if a TAZ mapped load to it (plus the
+# whole GRIP set). That is the right test for a load-serving substation and the
+# wrong one for a generation switchyard, which serves no load but is the
+# injection point for a power plant. The consequence was severe: HIFLD carries
+# "Diablo Canyon" as a 500 kV substation 911 m from the plant, but with no load
+# mapped to it, it was demoted to a line junction. `map_wecc_generators` then
+# snapped Diablo Canyon's 2,240 MW by nearest-neighbour to FOOTHILL -- a 12 kV
+# distribution substation 15.9 km away with two 115 kV corridors totalling
+# 300 MW. The must-run constraint forces 2,240 MW in every hour, 300 MW can
+# leave, and the model spilled 1,301 GWh over four weeks. The same happened to
+# The Geysers: 926 MW onto MIDDLETOWN, 12 kV, via a single 13.6 MW corridor,
+# spilling 608 GWh. Together those two nodes were 92% of all curtailment.
+#
+# Checked against the real interconnections: Diablo Canyon has its own 230 kV
+# and 500 kV switchyards and five lines -- Morro Bay and Mesa at 230 kV, Midway
+# (x2) and Gates at 500 kV -- and HIFLD's own line layer records exactly those
+# five with DIABLO CANYON as a named endpoint. The Geysers reaches Fulton and
+# Lakeville at 230 kV and Eagle Rock at 115 kV. None of it involves Foothill or
+# Middletown. The topology was in the data; the node-selection rule discarded
+# the terminals.
+GEN_SWITCHYARD_MIN_MW = 100.0
+GEN_SWITCHYARD_RADIUS_M = 2000.0
+
+
+def generation_switchyards(all_records: gpd.GeoDataFrame) -> set[str]:
+    """substation_ids that are the switchyard of a large power plant.
+
+    Picks, within GEN_SWITCHYARD_RADIUS_M of each CA generator at or above
+    GEN_SWITCHYARD_MIN_MW, the record with the HIGHEST voltage rather than the
+    nearest one. Nearest is wrong here: the closest record to Diablo Canyon is
+    "Pecho Valley" at 623 m with an unknown voltage, while the 500 kV "Diablo
+    Canyon" switchyard is 911 m away. Voltage is what decides whether a
+    substation can accept a GW-scale plant, so it orders the choice and distance
+    only breaks ties.
+    """
+    path = C.resolve_wec_json()
+    with open(path, encoding="utf-8") as fh:
+        graph = json.load(fh)
+    # Threshold on the PLANT, not the unit. WEC.json carries one asset per
+    # generating unit, and a multi-unit plant can be large while every unit is
+    # small: The Geysers is 926 MW across units of 40-68 MW, so a per-unit test
+    # at 100 MW misses the second-largest curtailment source in the model
+    # entirely. Units at identical coordinates are the same plant.
+    by_site: dict[tuple, float] = {}
+    for node in graph["nodes"]:
+        if node.get("id") not in C.CALIFORNIA_REGIONS:
+            continue
+        for handle, asset in (node.get("assets") or {}).items():
+            if asset.get("_class") != "Producer":
+                continue
+            x, y = asset.get("x"), asset.get("y")
+            if not (x and y):
+                continue
+            mw = float(asset.get("installed_capacity") or 0.0) / 1e6
+            by_site[(round(float(x), 5), round(float(y), 5))] = (
+                by_site.get((round(float(x), 5), round(float(y), 5)), 0.0) + mw
+            )
+    pts = [
+        {"mw": mw, "geometry": Point(x, y)}
+        for (x, y), mw in by_site.items()
+        if mw >= GEN_SWITCHYARD_MIN_MW
+    ]
+    if not pts:
+        return set()
+    gens = gpd.GeoDataFrame(pts, geometry="geometry", crs="EPSG:4326").to_crs(C.CA_ALBERS_CRS)
+
+    recs = all_records.copy()
+    recs["_kv"] = pd.to_numeric(recs.get("max_kv"), errors="coerce").fillna(-1.0)
+    sindex = recs.sindex
+    chosen: set[str] = set()
+    for _, gen in gens.iterrows():
+        idx = list(sindex.query(gen.geometry.buffer(GEN_SWITCHYARD_RADIUS_M)))
+        if not idx:
+            continue
+        near = recs.iloc[idx].copy()
+        near["_d"] = near.geometry.distance(gen.geometry)
+        near = near[near["_d"] <= GEN_SWITCHYARD_RADIUS_M]
+        if near.empty:
+            continue
+        # highest voltage first, nearest as the tie-break
+        near = near.sort_values(["_kv", "_d"], ascending=[False, True])
+        chosen.add(str(near.iloc[0]["substation_id"]))
+    print(f"  {len(chosen)} generation switchyards kept as nodes "
+          f"(plants >= {GEN_SWITCHYARD_MIN_MW:.0f} MW, within "
+          f"{GEN_SWITCHYARD_RADIUS_M:.0f} m, highest voltage wins)")
+    return chosen
 
 
 def load_junction_points(hubs: gpd.GeoDataFrame) -> np.ndarray:

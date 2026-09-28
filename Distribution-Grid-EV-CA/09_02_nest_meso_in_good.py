@@ -220,9 +220,18 @@ def _load_transformer_ratings() -> dict[str, float]:
         for h, w in zip(df["hub_id"], pd.to_numeric(df["rating_W"], errors="coerce"))
         if pd.notna(w) and w > 0
     }
-    pub = int((df.get("rating_source") == "published").sum()) if "rating_source" in df else 0
-    print(f"  transformer limits on {len(out):,} substations ({pub:,} published, "
-          f"{len(out) - pub:,} derived)")
+    # Report every source separately. This used to print "published" vs
+    # everything-else, which made the ICA ratings look like they had been
+    # dropped the first time they were used: the count fell from 1,215
+    # published to 589 purely because 626 nodes had been retagged "ica", while
+    # the values themselves were applied correctly. Nothing here filters on
+    # rating_source -- every row with a positive rating becomes a limit.
+    if "rating_source" in df:
+        counts = df.loc[pd.to_numeric(df["rating_W"], errors="coerce") > 0, "rating_source"]
+        breakdown = ", ".join(f"{n:,} {src}" for src, n in counts.value_counts().items())
+    else:
+        breakdown = "source not recorded"
+    print(f"  transformer limits on {len(out):,} substations ({breakdown})")
     return out
 
 
@@ -268,6 +277,8 @@ def build_nested_graph(
     include_ev: bool,
     capacity_scale_meso: float,
     capacity_scale_interface: float,
+    capacity_scale_transformer: float = 1.0,
+    bess_spec: dict | None = None,
     bess_top_n: int = 0,
     bess_hub_override: set[str] | None = None,
     only_ba: set[str] | None = None,
@@ -317,7 +328,17 @@ def build_nested_graph(
         hid: float(np.asarray(ev_kW[hub_index[hid]]).max()) if hid in hub_index else 0.0
         for hid in hub_ids
     }
-    if bess_hub_override is not None:
+    if bess_spec is not None:
+        # Explicit per-node sizing (08_13), which replaces both the hub set and
+        # the per-site rating. Deliberately NOT filtered to EV-positive hubs:
+        # this fleet is sized against the deficit the LP leaves, and the worst
+        # deficits are base-load delivery failures that may carry little or no
+        # EV load. Filtering on EV peak is exactly what produced a fleet a
+        # tenth the size of the deficit it was meant to cover.
+        bess_hubs = {hid for hid in bess_spec if hid in hub_index}
+        print(f"  BESS sized to deficit: {len(bess_hubs):,} nodes, "
+              f"{sum(float(bess_spec[h].get('capex_capacity_W', 0)) for h in bess_hubs) / 1e6:,.0f} MW")
+    elif bess_hub_override is not None:
         # Restrict to EV-positive hubs even when an explicit (e.g. congestion-
         # ranked) override is supplied, so BESS still lands where there's
         # local EV demand to smooth rather than on a zero-load pass-through.
@@ -353,7 +374,7 @@ def build_nested_graph(
             if include_ev:
                 assets[f"ev_load_{hid}"] = make_ev_load_asset(hid, ev_prof)
             if include_bess and hid in bess_hubs:
-                spec = bess_lookup.get(hid, {})
+                spec = (bess_spec or {}).get(hid) or bess_lookup.get(hid, {})
                 peak_w = max(peaks.get(hid, 0.0) * 1000.0 * 0.5, 1e6)
                 assets[f"bess_{hid}"] = make_store_asset(
                     hid, float(spec.get("capex_capacity_W") or peak_w), float(spec.get("duration_h") or 4.0)
@@ -375,7 +396,15 @@ def build_nested_graph(
         }
         rating = ratings.get(hid)
         if rating is not None and rating > 0:
-            node["transformer_capacity"] = float(rating)
+            # Scaled separately from line capacity. S3 relaxes corridors only,
+            # which left substation transformers binding and made part of its
+            # residual shortfall irreducible: SUB_02201 shed an identical
+            # 53.0/53.4/53.4/53.4 GWh across S0/S1/S2/S3, unmoved by 10x lines,
+            # because the limit was the step-down bank rather than any corridor.
+            # Scaling the two independently is what separates corridor-
+            # attributable congestion from transformer-attributable congestion,
+            # and they imply different investments.
+            node["transformer_capacity"] = float(rating) * capacity_scale_transformer
         g["nodes"].append(node)
         existing_ids.add(hid)
 

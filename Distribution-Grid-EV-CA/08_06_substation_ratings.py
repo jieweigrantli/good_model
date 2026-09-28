@@ -8,19 +8,34 @@ Why this matters
 ----------------
 Without a rating the model gives every substation unlimited throughput, so
 power moves from transmission into local load with no transformer between
-them. That is not a small omission: PG&E's published bank loadings run at a
-median 85.6% of rating, 41% of substations are above 90%, and 19% are already
-above 100%. The transformer binds across most of the system while the
-corridors above it still have headroom, so a model without it can only ever
-find congestion on transmission lines -- and will attribute EV impacts to the
-wrong asset class.
+them. The transformer binds across much of the system while the corridors above
+it still have headroom, so a model without it can only ever find congestion on
+transmission lines -- and will attribute EV impacts to the wrong asset class.
+Measured directly: relaxing corridors alone (S3) leaves 79.6 GWh of shortfall
+over four weeks, while relaxing corridors and transformers together (S4) leaves
+6.4 GWh, so 38% of undelivered energy is transformer-bound.
 
 Sources, in precedence order:
-  1. PG&E GRIP ``DFSubstationArea``: summed bank ratings (MVA) per substation
-  2. SCE DRPEP ``GNA Substations``: published substation rating
-  3. SCE DRPEP ``ICA Substations``: projected load + max remaining capacity
-  4. derived: assigned peak demand / TYPICAL_LOADING, so an unmeasured
+  1. PG&E ICA: published load headroom + published measured baseload (08_12)
+  2. PG&E GRIP ``DFSubstationArea``: summed bank ratings (MVA) per substation
+  3. SCE DRPEP ``GNA Substations``: published substation rating
+  4. SCE DRPEP ``ICA Substations``: projected load + max remaining capacity
+  5. derived: assigned peak demand / TYPICAL_LOADING, so an unmeasured
      substation is given the same headroom ratio as the measured median
+
+Sources 1 and 4 are the same identity, ``capacity = headroom + baseload``, in
+the two forms the utilities publish. Source 2 is kept only as a fallback: the
+bank sums contradict PG&E's own measurements badly enough at some substations
+(02201 sums to 9.88 MVA against a published 118.9 MW peak) that they cannot be
+treated as a substation rating.
+
+A caution on TYPICAL_LOADING below, which source 5 depends on: 0.856 is the
+median across substations of the *maximum* bank loading at each substation, not
+a substation-level loading. The substation-level statistic,
+sum(bank load)/sum(bank rating), is 0.79. The docstring here previously quoted
+the max-of-banks figures ("median 85.6%, 41% above 90%, 19% above 100%") as
+though they described substations; the per-bank values are 79.7%, 32.1% and
+13.2%.
 
 Writes:
   data/meso/substation_ratings.csv
@@ -126,9 +141,41 @@ def sce_ratings() -> pd.DataFrame:
     return pd.DataFrame({"substation_id": list(rows), "rating_W": list(rows.values())})
 
 
+def pge_ica_ratings() -> pd.DataFrame:
+    """PG&E capacity as ``ICA headroom + measured baseload``, from 08_12.
+
+    Takes precedence over ``pge_ratings()`` because the GNA bank sums are not a
+    usable substation rating. Substation 02201, SF X (MISSION), sums to
+    9.88 MVA across the two banks GRIP lists, while PG&E's own
+    ``SubstationLoadProfile`` reports a 118.9 MW peak at the same id and name
+    and the ICA files give ``IC_Safety_Bank_kW`` of 18,240-46,090 kW on its
+    feeders. ``EDSubstations`` confirms it really has 2 banks, so the inventory
+    is complete and ``facilityra`` simply does not mean what summing it assumes.
+    Under the bank sum that node alone shed 53 GWh over four weeks -- 41% of all
+    S0 shortfall -- at a substation the real grid serves without difficulty.
+
+    The identity is the one Li & Jenn (2024) use throughout
+    (`R_Yanning/07_05_grid_EV.R`, line 23): headroom is by definition the
+    additional load a facility can take, so capacity is headroom plus the load
+    it already carries. It needs both halves, so 08_12 emits only substations
+    that have both and the rest fall through to the chain below.
+    """
+    path = C.MESO_DIR / "substation_ica_capacity.csv"
+    if not path.is_file():
+        print("  PG&E ICA capacity missing (run 08_12); falling back to GNA bank sums")
+        return pd.DataFrame(columns=["substation_id", "rating_W"])
+    d = pd.read_csv(path)
+    d["substation_id"] = d["substation_id"].astype(str).str.zfill(5)
+    d = d[d["rating_W"] > 0]
+    print(f"  PG&E ICA: {len(d):,} substations from headroom + measured baseload")
+    return d[["substation_id", "rating_W"]]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--typical-loading", type=float, default=TYPICAL_LOADING)
+    ap.add_argument("--no-ica", action="store_true",
+                    help="Ignore the PG&E ICA capacities and use GNA bank sums only.")
     args = ap.parse_args()
 
     nodes_csv = C.MESO_DIR / "meso_nodes.csv"
@@ -137,13 +184,21 @@ def main() -> None:
     nodes["substation_id"] = nodes["substation_id"].astype(str)
 
     print("Collecting published ratings...")
-    published = pd.concat([pge_ratings(), sce_ratings()], ignore_index=True)
+    # Order matters: drop_duplicates keeps the first, so the ICA identity wins
+    # over the GNA bank sums wherever both exist.
+    sources = [] if args.no_ica else [pge_ica_ratings()]
+    sources += [pge_ratings(), sce_ratings()]
+    published = pd.concat(sources, ignore_index=True)
     published = published.drop_duplicates("substation_id")
 
     df = nodes[["substation_id", "hub_id", "total_peak_W"]].merge(
         published, on="substation_id", how="left"
     )
-    df["rating_source"] = np.where(df["rating_W"].notna(), "published", "derived")
+    ica_ids = set() if args.no_ica else set(pge_ica_ratings()["substation_id"])
+    df["rating_source"] = np.where(
+        df["substation_id"].isin(ica_ids), "ica",
+        np.where(df["rating_W"].notna(), "published", "derived"),
+    )
 
     derived = df["rating_W"].isna()
     df.loc[derived, "rating_W"] = np.maximum(

@@ -335,6 +335,107 @@ whether it approaches zero as capacity scales up. S0 also still carries
 75.3 GWh of shortfall on PG&E's own under-supplied nodes, so invariant B2 is
 not satisfied and some shortfall in every scenario is structural.
 
+### Why storage does nothing here, and where it would (26 September 2026)
+
+S2's batteries were tested three ways and none of them moved the result. The
+reason is physical, not economic, and it took a deliberate experiment to find.
+
+| fleet | sites | discharged | energy | cycles | CO2 saving |
+|---|---|---|---|---:|---|
+| endogenous (optimiser free to build) | 786 avail. | -- | -- | -- | built only 66 MW |
+| prescribed by EV peak, 1,163 MW / 4,652 MWh | 786 | 11 (1%) | 3.97 GWh | 0.85 | 315-502 t |
+| prescribed by deficit, 1,069 MW / 6,892 MWh | 115 | 2 (2%) | 0.53 GWh | 0.08 | -1,000 t |
+
+Every saving is inside the 0.10% objective spread measured across solver
+configurations, so none is distinguishable from zero.
+
+**The batteries were free.** Under `--no-capex` the capex variable is bounded to
+zero and `make_store_asset` sets no operating cost, so `Store.objective` charges
+nothing for either building or running them. An LP will take free arbitrage if
+any exists. It declined, which means the constraint is not price.
+
+**Storage cannot relieve a delivery constraint, because it needs that
+constraint to charge.** A battery must charge before it discharges, and charging
+means importing *more* through the path that is already capped. A substation
+importing at its limit has no spare hour to fill a battery. The per-node deficit
+shape (`shortfall_by_node.csv`, written by `10_01::_shortfall_by_node`) shows
+how absolute this is in S0: the five largest deficits are short in **672 of 672
+hours**, so no battery of any size at any price helps them. Median longest
+contiguous deficit run in S0 is 91 h.
+
+**EV load is what makes storage viable at all**, because EV charging is peaky
+where base-load delivery failure is permanent. Adding EV load moves the median
+longest deficit run from 91 h to 5 h. Of 97.6 GWh of deficit at ICA-rated nodes,
+5,826 MWh sits in runs of 8 h or less and 35,515 MWh in longer runs -- so even
+perfectly placed storage reaches about a seventh of the deficit energy. That
+ceiling is physical.
+
+**Sizing to the deficit was worse than sizing to EV peak, and the reason is the
+finding.** The batteries that actually cycled were at nodes with *no deficit*:
+SUB_18295 (2,240 MW nuclear, 1,301 GWh curtailed) and SUB_04314 (926 MW
+geothermal, 608 GWh curtailed). They were absorbing stranded must-run
+generation. Deficit-sizing deleted batteries from exactly those nodes because
+they have no shortfall to size against. **Storage's value in this system is at
+the surplus end, not the deficit end.**
+
+So the sizing recommendation is by curtailment, not deficit, and an order of
+magnitude larger than anything tested: SUB_18295 and SUB_04314 spill 1,909 GWh
+between them, 92% of all curtailment, at roughly 1,900 MW sustained. Both tested
+fleets absorb 4.7 GWh per cycle against 2,072 GWh spilled -- about 500x too
+small. Useful storage here is GW-scale at two sites, not MW-scale at hundreds.
+
+This also bounds a storage-versus-transmission comparison. The 161 GWh of
+corridor-attributable shortfall is not addressable by storage at any price, so
+the two are not substitutes for the same problem: wires fix delivery, storage
+fixes curtailment, and in this system those sit at opposite ends. The comparison
+that *is* meaningful is narrower -- upgrading the corridors out of
+SUB_18295/SUB_04314 against storing their output on site, both aimed at the same
+1,909 GWh. Note transmission `capex_cost` is 0 throughout `09_02`, so that
+comparison needs a corridor cost basis the model does not currently carry.
+
+### As-built four-week results, all four certified (25 September 2026)
+
+First set where every scenario reaches a **certified** optimum on the 672 h
+horizon, after `ScaleFlag=1` (see below). PG&E nested, rest of California copper
+plate, `--no-capex` so no investment can mask a shortage. Total solve time 2.1 h
+for all four, against three prior 4 h attempts that certified nothing.
+
+| | S0 (no EV) | S1 (EV, constrained) | S2 (EV + BESS) | S3 (EV, relaxed) |
+|---|---:|---:|---:|---:|
+| objective | 1.969748e9 | 2.706243e9 | 2.699162e9 | 1.446984e9 |
+| CO2 | 23.0023 Mt | 24.5820 Mt | 24.5815 Mt | 22.0259 Mt |
+| shortfall | 128.64 GWh | 196.50 GWh | 195.79 GWh | 79.57 GWh |
+| wastage | 2074.1 GWh | 2072.6 GWh | 2071.1 GWh | 618.4 GWh |
+| solve | 1,146 s | 680 s | 1,921 s | 3,755 s |
+
+```
+EV carbon cost (S1 - S0) = +1,579,730 t CO2
+EV unserved  (S1 - S0)   =      67.86 GWh = 10.8% of the ~627 GWh of EV demand
+M_BESS       (S1 - S2)   =        502 t CO2  <- within solver noise
+P_cong       (S1 - S3)   = +2,556,107 t CO2  <- CONTAMINATED, needs S0R
+```
+
+**Forbidding investment multiplies the congestion signal sixfold.** With CAPEX
+enabled the same comparison gave only 10.9 GWh of EV-induced shortfall, because
+the optimiser simply built 1.27 GW more storage for S1 than for S0. The as-built
+framing is what exposes the delivery constraint.
+
+**Distributed storage does nothing measurable here.** S2 prescribes 1,163 MW
+across 786 substations -- 17.6x what the optimiser chose to build when free --
+and it relieves 0.71 GWh of the 67.86 GWh EV shortfall, about 1%. The resulting
+502 t sits inside the 0.10% objective spread measured across solver
+configurations, so it cannot be distinguished from zero. The mechanism is
+visible in the wastage column: it barely moves between S0 and S1 (2074.1 ->
+2072.6 GWh), so there is no surplus for a battery to time-shift. EV shortfall
+here is a *delivery* problem, not a timing one, and storage downstream of a
+constrained transformer cannot relieve a constraint upstream of it.
+
+`P_cong` remains the contaminated form. S3's wastage collapses from 2072.6 to
+618.4 GWh, which is overwhelmingly recovered base-load curtailment rather than
+anything EV-related, so the figure still charges EVs for a relaxation that
+benefits all load. `S0R` (relaxed transmission, no EV) is implemented in `10_01`
+and closes this.
+
 ### What the solver taught us, expensively
 
 **Crossover is 98% of the runtime and is where the model fails.** On the S1
@@ -486,6 +587,73 @@ crossover starts working: dual pushes complete immediately and primal pushes
 drain at ~200,000/s, against a CAPEX-enabled run where crossover never finished
 2.27M iterations in 4 h.
 
+### ScaleFlag=1: what actually made `four_week` solvable
+
+**`ScaleFlag=2` was the cause of the four-week convergence failure.** It had been
+set in the config from the start, on the reasoning that a model with a nine-order
+coefficient spread needs aggressive scaling. It does not: aggressive scaling was
+*creating* the instability. Standard scaling certifies the same model in
+**1,011.9 s** where `ScaleFlag=2` failed to certify in 14,400 s on three separate
+attempts.
+
+672 h, S0, `--no-capex`, identical 2,400 s budget:
+
+| config | certified | objective reached | final dual inf |
+|---|---|---|---|
+| **`ScaleFlag=1`** | **yes, 1,011.9 s** | **1.969024916e9** | **0** |
+| `Quad=1` | no | 1.9964419e9 | 35.9 |
+| `ScaleFlag=3` | no | 1.9752436e9 | 15,933 |
+| `Presolve=1` | no | 2.0026964e9 | 3,398 |
+| `NumericFocus=3` | no | never left barrier (0 simplex iterations) | -- |
+| baseline (`ScaleFlag=2`) | no | 2.0094031e9 | 13,400 |
+
+The certified optimum is 2.0% *below* where the baseline had crawled to after
+four hours, so those runs were never near-converged -- they were 2% away with
+dual infeasibility oscillating over two orders of magnitude. Everything
+previously attributed to intrinsic conditioning (barrier stalling on primal
+residual, crossover needing 4.1M iterations, dual infeasibility reaching 6.18
+then rebounding to 320) was this one parameter.
+
+Two cautions carried out of this. `NumericFocus=3` is unusable at this size: it
+made zero simplex iterations in 2,400 s. And Gurobi **appends** to `LogFile`, so
+any tool parsing that file must keep only the segment after the last
+"Optimize a model" or it will attribute the previous run's progress to the
+current one -- which is exactly how `NumericFocus=3` first appeared to match
+`Presolve=1` byte for byte.
+
+### Solver parameter sweep, and why concurrent LP does not help
+
+`10_09_solver_param_sweep.py` times Gurobi configurations on one seasonal week,
+using the `ASTR_GUROBI_PARAMS` env hook in `10_01::_solver_kw`. The motivation
+was that barrier iterations here are cheap (1.23 s each, Factor Ops 5.8e8) while
+the crossover clean-up ran ~4.1M **single-threaded** simplex iterations, so the
+phase consuming 3.5 of 4 hours used one of 14 cores.
+
+June week, S0, `--no-capex`, time to certified optimum:
+
+| config | solve | speedup | objective |
+|---|---|---|---|
+| `Method=3, Aggregate=1` | 325.9 s | 2.89x | 471234294.3 |
+| `Method=3` (concurrent) | 350.4 s | 2.69x | 471107962.3 |
+| `Sifting=2` | 792.6 s | 1.19x | 470987284.5 |
+| `Aggregate=1` | 864.4 s | 1.09x | 471453455.1 |
+| baseline | 941.3 s | 1.00x | 471234287.5 |
+
+**The 2.89x does not carry to 672 h.** At four weeks, concurrent is *worse*:
+barrier takes 1,916 s instead of 1,234 s because 14 cores are split three ways,
+and crossover then starts from further back. At matched wall time the
+non-concurrent run was at 1.9997e9 where concurrent was at 2.0323e9. The
+one-week gain came from a simplex method winning the race outright; at four
+weeks neither simplex finishes, so concurrency only starves barrier. Use the
+default `Method=2` on `four_week`.
+
+Two by-products of the sweep worth keeping. Certified-optimal objectives span
+470987284.5 to 471453455.1 across configurations -- a **0.10% spread** that sets
+a floor on any difference worth interpreting (the EV carbon cost S1-S0 is 2.25%
+of total, comfortably above it). And `Aggregate=0`, long set in the config, is a
+deviation from Gurobi's default of 1 that turns out to buy only 1.09x, so it was
+never the problem it looked like.
+
 ### Barrier tolerance: do not loosen it
 
 `BarConvTol` measures the complementarity gap, not primal feasibility, and on
@@ -509,7 +677,9 @@ to a pass that reads out capacity and never dispatch.
 
 `TimeLimit` defaults to 4 h (override with `ASTR_TIME_LIMIT_S`), 24 h for the
 8760 horizon. `OptimalityTol` 1e-5, `FeasibilityTol` 1e-6, `BarConvTol` 1e-7,
-`ScaleFlag` 2, `NumericFocus` 1 (2 for S3). Duals are disabled
+`ScaleFlag` **1** (see above -- the 2 that `_solver_kw` still hardcodes is the
+setting that broke `four_week`; pass `ASTR_GUROBI_PARAMS='{"ScaleFlag":1}'` until
+the default is changed), `NumericFocus` 1 (2 for S3). Duals are disabled
 (`extract_duals=False`); enabling them doubled memory and caused a MemoryError
 at 12M variables.
 
