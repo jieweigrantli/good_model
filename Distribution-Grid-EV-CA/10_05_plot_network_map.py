@@ -50,6 +50,28 @@ def kv_width(kv: float) -> float:
     return float(np.clip(np.sqrt(max(kv, 10.0)) / 6.0, 0.25, 4.2))
 
 
+# Which quantity sets arc width. Capacity is the default because it is what the
+# LP actually constrains: a corridor binds on its MW limit, not on its voltage.
+# Voltage remains the colour, so both are legible at once -- and where the two
+# disagree (a 230 kV corridor carrying only 400 MW because one circuit was
+# resolved, against another carrying 2,400 MW) the map shows it directly.
+WIDTH_BY = "capacity"
+
+
+def mw_width(mw: float) -> float:
+    """Arc width from corridor capacity in MW.
+
+    sqrt, like the voltage scale it replaces, so a 4,500 MW 500 kV corridor is
+    visually dominant without a 60 MW sub-transmission tie vanishing. Capacities
+    in this network span 14 MW to 4,500 MW.
+    """
+    return float(np.clip(np.sqrt(max(mw, 5.0)) / 11.0, 0.25, 4.2))
+
+
+def arc_width(kv: float, mw: float) -> float:
+    return mw_width(mw) if WIDTH_BY == "capacity" else kv_width(kv)
+
+
 def node_size(rating_W: float, peak_W: float) -> float:
     """Marker area from transformer rating, falling back to assigned peak."""
     mva = (rating_W if rating_W and rating_W > 0 else (peak_W or 0.0)) / 1e6
@@ -126,7 +148,7 @@ def plot_png(hubs, edges, outline, path: Path) -> None:
         LineCollection(
             [[r[0], r[1]] for r in rows],
             colors=[_band(r[2])[1] for r in rows],
-            linewidths=[kv_width(r[2]) for r in rows],
+            linewidths=[arc_width(r[2], r[3] / 1e6) for r in rows],
             alpha=0.85,
             zorder=2,
         )
@@ -136,7 +158,8 @@ def plot_png(hubs, edges, outline, path: Path) -> None:
                alpha=0.55, linewidths=0, zorder=3)
     ax.autoscale_view()
     ax.set_title(
-        f"Model network: arc width by voltage, node size by substation capacity\n"
+        f"Model network: arc width by {'corridor capacity (MW)' if WIDTH_BY == 'capacity' else 'voltage'}, "
+        f"colour by voltage class, node size by substation capacity\n"
         f"{len(edges):,} corridors between {len(hubs):,} substation nodes",
         fontsize=13,
     )
@@ -179,7 +202,7 @@ def plot_png(hubs, edges, outline, path: Path) -> None:
             a, b = xy.get(r.source), xy.get(r.target)
             if a and b:
                 segs.append([a, b])
-                wids.append(kv_width(float(r.rated_kv)))
+                wids.append(arc_width(float(r.rated_kv), float(r.installed_capacity_W) / 1e6))
         ax.add_collection(LineCollection(
             segs, colors=PROV[prov][0], linewidths=wids,
             alpha=0.5 if prov == "inferred" else 0.9,
@@ -223,7 +246,9 @@ def plot_html(hubs, edges, outline, path: Path) -> None:
         segs.append({
             "x1": round(a[0], 5), "y1": round(a[1], 5),
             "x2": round(b[0], 5), "y2": round(b[1], 5),
-            "kv": kv, "c": colour, "w": round(kv_width(kv), 2), "b": label,
+            "kv": kv, "c": colour,
+            "w": round(arc_width(kv, float(r.installed_capacity_W) / 1e6), 2),
+            "b": label,
             "pv": str(getattr(r, "provenance", "inferred")),
             "mw": round(float(r.installed_capacity_W) / 1e6, 1),
             "s": r.source.replace("SUB_", ""), "t": r.target.replace("SUB_", ""),
@@ -401,15 +426,25 @@ addEventListener('resize',fit); fit();
 
 
 def main() -> None:
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--width-by", choices=["capacity", "voltage"], default="capacity",
+                    help="What arc thickness encodes. Colour is always voltage class.")
+    ap.add_argument("--suffix", default="", help="Append to the output filenames.")
+    args = ap.parse_args()
+    global WIDTH_BY
+    WIDTH_BY = args.width_by
+
     C.ensure_dir(OUT_DIR)
     hubs, edges = load_model()
     outline = ca_outline(hubs.crs)
 
-    png = OUT_DIR / "ca_model_network.png"
+    png = OUT_DIR / f"ca_model_network{args.suffix}.png"
     plot_png(hubs, edges, outline, png)
     print(f"wrote {png}")
 
-    html = OUT_DIR / "ca_model_network.html"
+    html = OUT_DIR / f"ca_model_network{args.suffix}.html"
     plot_html(hubs, edges, outline, html)
     print(f"wrote {html}")
 

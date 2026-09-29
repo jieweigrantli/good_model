@@ -335,6 +335,149 @@ whether it approaches zero as capacity scales up. S0 also still carries
 75.3 GWh of shortfall on PG&E's own under-supplied nodes, so invariant B2 is
 not satisfied and some shortfall in every scenario is structural.
 
+## 0. Provenance, fixes, deficits and limitations
+
+One place to see what is measured, what is assumed, and what is missing. Written
+so a reader can tell which numbers rest on published data and which rest on a
+choice we made.
+
+### 0.1 Data sources
+
+| what | source | used for |
+|---|---|---|
+| PG&E substations, feeders, transmission lines | GRIP `EDSubstations`, `FeederDetail`, `TransmissionLines` (`data/GRIP_SHP`) | node set, corridor geometry, bank counts |
+| PG&E measured substation load | GRIP `SubstationLoadProfile` (`high` band, 288 month-hours, 639 substations) | base load, and the baseload half of the capacity identity |
+| PG&E bank ratings | GRIP `DFSubstationArea___PeakFacilityLoadingPercent` (1,236 banks, 694 substations) | fallback transformer rating; **not trustworthy, see 0.3** |
+| PG&E ICA detailed results | `grip.pge.com` via the `PresignedURLPROD` feature service; 20 division ZIPs, 12 GB, 2,979 load-side feeders (`08_11`) | headroom half of the capacity identity |
+| SCE ICA / GNA | DRPEP ArcGIS (`08_04`) | SCE substation ratings, load profiles |
+| Substations, transmission lines (national) | HIFLD (4,442 CA substations; 2,171 CA lines with named endpoints) | non-PG&E nodes, line terminals, **plant switchyards** |
+| Power infrastructure (crowd-sourced) | OpenStreetMap via osmium (3,981 substations, 43,841 lines) | corridor confirmation, shared-node chaining |
+| Balancing areas, utility territories | CEC GeoPackages | BA assignment, territory masking |
+| WECC generators, profiles, **emission factors** | `Examples/WEC_modified.json` | generation, dispatch, per-asset `co2` |
+| County electricity demand | NREL | validation of the allocated base load |
+| Travel demand, EV charging | CSTDM TAZ, Li & Jenn charging model | EV load |
+| Census blocks | US Census | TAZ -> block -> feeder -> substation chain |
+
+### 0.2 Artificial fixes and assumptions
+
+Ordered by how much they could move a result.
+
+| assumption | value | why it exists | risk |
+|---|---|---|---|
+| ICA line sections -> feeder | **max** across sections | headroom at a section includes upstream impedance, so the section nearest the substation is the bank-relevant one. Min gave 2.8% headroom against GNA's ~20%; max gives 46%; median gives 14% | **high** -- the choice moves overloaded PG&E nodes between 19 and 246. Median is best cross-validated; max is in use. `--section-agg` switches it |
+| `TYPICAL_LOADING` | 0.856 | divides assigned peak to derive a rating where nothing is published (1,883 nodes) | **high** -- it is the median of the *maximum* bank loading per substation, used as if it described a substation. The substation-level figure is **0.79**. Not yet corrected |
+| generation switchyard rule | plant >= 100 MW, within 2 km, highest voltage wins | plants have their own switchyards and serve no load, so the TAZ test dropped them | medium -- fixes the two dominant cases; 19 of 42 plants >= 300 MW still land below 230 kV |
+| nuclear dispatch | forced to 100% of nameplate every hour | `dispatchable=False` applies both a max and a must-run min | medium -- correct as baseload, but it makes curtailment entirely a function of corridor adequacy |
+| transmission operating cost | 0.36 $/MWh per corridor | without it a corridor pair is a flat direction and energy cycles A->B->A for free; measured 293 TWh of gross flow against 40 TWh of generation | low -- necessary, and small against gas at ~38 $/MWh |
+| `MIN_RATING_W` | 5 MW | floor so a near-zero-load node still has a usable interface | low -- but 165 of 211 derived PG&E ratings sit *on* this floor |
+| synthetic feeds | 5 MW, 342 nodes | otherwise isolated nodes shed all their load | low-medium -- fabricated capacity, flagged in output |
+| zero-load divide guard | 1 W, 1,611 assets | `profile = profile_W / cap` needs `cap > 0` | low -- presolve removes them |
+| BESS capex / duration / efficiency | 2.1 $/W, 4 h, 0.90 | -- | low for the as-built runs, where capex is not charged at all |
+| `EV_HOME_SHARE` | 0.68 | split of charging to home | medium, untested here |
+| corridor snapping | 1,500 m substation, 400 m hub precedence, 250 m split | reconstruct corridors from line geometry | medium -- MST contraction replaced clique after a 499 km spurious corridor |
+| solver | `ScaleFlag=1`, `BarConvTol` 1e-7, `OptimalityTol` 1e-5 | ScaleFlag=2 made the 672 h LP unsolvable | low -- but see the 0.10% noise floor |
+
+### 0.3 Data deficits
+
+| deficit | scale | consequence |
+|---|---|---|
+| PG&E bank ratings contradict PG&E's own load data | substation 02201 sums to 9.88 MVA against a published 118.9 MW peak | the bank layer is a Grid Needs Assessment keyed on `gnaneedid`, not an asset inventory. Demoted to a fallback behind the ICA identity |
+| substations with ICA but no measured baseload | 65, incl. SF K and SF L | the identity needs both halves; these fall back to bank sums. ~14 GWh of S0 shortfall |
+| nodes with no PG&E identity at all | `HIFLD_*`, ~40 GWh of S0 shortfall | rating is `peak / 0.856`, i.e. invented. The largest single component of residual S0 shortfall |
+| coal emission factor | one shared value, 250 g/kWh | real coal is 900-1,000 g/kWh. A fuel-level placeholder, not per-unit data. `ASTR_COAL_CO2` overrides; left unchanged so results trace to the input |
+| fossil generators with no `co2` | 43 | fall back to their own fuel's median from the same file; volume printed at runtime |
+| HIFLD `Max_Voltag` unreliable | Midway and Gates, both 500 kV Path 15 terminals, are tagged 0 | a voltage filter rejects correct high-voltage endpoints. Why the switchyard rule cannot be tightened further |
+| The Geysers under-connected | 776 MW on 405 MW of corridor | real field splits across Fulton and Lakeville (230 kV) and Eagle Rock (115 kV); we model one tap |
+| SDG&E ICA | not acquired | SDG&E ratings are derived only. Request email drafted, not sent |
+| no distribution layer | -- | Li & Jenn's binding constraint is feeder thermal/voltage on 5,582 feeders. We cannot represent it, and deliberately discard it in the ICA aggregation |
+
+### 0.4 Limitations
+
+| limitation | effect on results |
+|---|---|
+| **PG&E only**; rest of WECC copper-plated | every congestion number is a **lower bound**. No intra-SCE or inter-BA congestion is visible. Li & Jenn find PG&E worst in *magnitude* but SCE widest in *extent*, so scope omits the broader problem |
+| **NTC pipe-flow**, not angle-based DC OPF | no loop flow or Kirchhoff voltage law, so reported congestion is a **lower bound** |
+| **current EV adoption only** | `P_cong` is indistinguishable from zero. Li & Jenn's own counts put overload at 14% of feeders in 2022 and 80% by 2045, so this is expected rather than a null result |
+| **four seasonal weeks**, not 8760 h | VRE share 5.95% against the annual 6.01%, so the sample is representative. Required by the RPS, which is a budget over the solve horizon |
+| **as-built** (`--no-capex`) | no investment can mask a shortage. Matches Li & Jenn's frozen-grid design, but means results are not a forecast |
+| **0.10% solver noise floor** (~6,770 t) | any CO2 difference below this is not interpretable. `P_cong` and `M_BESS` both sit at or under it |
+| emission factors are CO2, not CO2e | `ch4` and `n2o` are on the assets and not counted |
+| RPS has no compliance valve | `non_compliance_capacity` is unset so the RPS is hard. This is why the horizon cannot be decomposed by time |
+
+### Results: corrected plant topology + per-generator emission factors (27 September 2026)
+
+Supersedes every earlier result in this document. Two corrections landed together
+and both move the headline numbers by more than a factor of two, so nothing
+above this line should be quoted.
+
+**Correction 1: generation switchyards.** `09_01::generation_switchyards` now
+keeps a substation as a node when a large plant sits on it, regardless of load.
+Previously Diablo Canyon's 2,240 MW was snapped 15.9 km to FOOTHILL, a 12 kV
+distribution substation with 300 MW of corridor, and The Geysers' 926 MW to
+MIDDLETOWN, 12 kV, 13.6 MW. Verified against the NRC filing and CPUC documents:
+Diablo Canyon has its own 230 kV and 500 kV switchyards and five lines (Morro
+Bay and Mesa at 230 kV, Midway x2 and Gates at 500 kV), and HIFLD's own line
+layer records exactly those five. It now sits on its own 500 kV switchyard with
+**10,300 MW** of corridor. Curtailment fell **2,072.6 -> 163.3 GWh (-92%)**.
+
+**Correction 2: per-generator emission factors.** `_emissions_kg` now uses each
+asset's published `co2` (kg/J electricity) instead of fuel-level constants that
+were 1.9x (gas) to 22x (biomass) too high. Total emissions fall to 31% of the
+previous values and the consequential EV factor from 771 to 410 g/kWh.
+
+PG&E only (`--only-ba WEC_CALN`), 946 substations nested, 672 h, `--no-capex`.
+
+| | lines | interfaces | transformers | EV | BESS | CO2 Mt | shortfall | wastage | generation | BESS cycling | dispatched |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| S0 | x1 | x1 | published | off | -- | 6.5194 | 74.65 | 164.5 | 59,244 | -- | -- |
+| S0R | x10 | x10 | published | off | -- | 6.4894 | 19.94 | 92.2 | 59,205 | -- | -- |
+| S1 | x1 | x1 | published | on | -- | 6.7698 | 91.02 | 163.3 | 59,912 | -- | -- |
+| S2 | x1 | x1 | published | on | 509 MW / 2,035 MWh | 6.7607 | 91.18 | 112.5 | 60,030 | 6/6 | 144.11 GWh |
+| S3 | x10 | x10 | published | on | -- | 6.7413 | 30.13 | 92.1 | 59,906 | -- | -- |
+| S4 | x10 | x10 | **x10** | on | -- | 6.7538 | 4.20 | 92.1 | 59,948 | -- | -- |
+
+Shortfall and wastage in GWh; generation in GWh over the 672 h.
+
+**Consequential EV emission factor** (dCO2 / EV energy delivered, where
+delivered = 626.8 GWh demanded minus that scenario's incremental shortfall):
+
+| comparison | dCO2 | delivered | EF |
+|---|---|---|---|
+| S1 - S0, constrained | 250,403 t | 610.4 GWh | **410 g/kWh** |
+| S3 - S0R, lines relaxed | 251,861 t | 616.6 GWh | 408 g/kWh |
+| S4 - S0R, all relaxed | 264,365 t | 642.5 GWh | 411 g/kWh |
+
+Marginal generation is gas throughout (+692 GWh S1-S0; coal *falls* 28 GWh), so
+410 g/kWh is the gas fleet's own factor. The factor being flat across
+transmission regimes is the finding: relaxing transmission changes how much EV
+energy is delivered, not what generates it.
+
+**Derived metrics, with the noise floor stated:**
+
+```
+P_cong (S1-S0)-(S3-S0R) =  -1,458 t     <- indistinguishable from zero
+M_BESS (S1-S2)          =   9,173 t     <- barely above the floor
+noise floor (0.10% of 6.8 Mt) ~ 6,770 t
+```
+
+The 0.10% floor is the spread measured across solver configurations that all
+reported "optimal" (see the parameter sweep section).
+
+**At current EV adoption, congestion in PG&E imposes no measurable carbon
+penalty.** That is consistent with Li & Jenn, whose own counts give 795 of 5,582
+feeders overloaded in 2022 (14%) rising to 4,452 (80%) by 2045. Our 16.4 GWh of
+626.8 GWh EV energy undeliverable (2.6%) is the same story one tier up. The
+congestion signal is a 2030s-2040s phenomenon, so the obvious next test is EV
+adoption scaling rather than more model refinement.
+
+**Storage works but not on carbon.** S2's 6 batteries all cycled ~71 times and
+moved 144 GWh, cutting curtailment 31% (163.3 -> 112.5 GWh) while leaving
+shortfall unchanged. Storage absorbs spilled zero-carbon energy, loses 10% to
+round-trip efficiency, and the replacement is gas. Real curtailment benefit,
+negligible carbon benefit. Note this is the third fleet tested: sizing to EV
+peak gave 0.85 cycles, sizing to deficit gave 0.08, sizing to curtailment gave
+70.8. Placement, not scale, was always the binding issue.
+
 ### Why storage does nothing here, and where it would (26 September 2026)
 
 S2's batteries were tested three ways and none of them moved the result. The
