@@ -1,0 +1,8 @@
+tag,horizon,scenario,status,n_nodes,n_edges,n_hours,objective,co2_kg,binding_line_hours
+four_week,four_week,S2,dry_run,1897,6778,672,,,
+four_week,four_week,S3,"error: Solver did not return a loadable solution (status=error, termination_condition=error).",1897,6778,672,,,
+four_week,four_week,S2_bess10pct,ok,1897,6778,672,2551761017035.5063,18014106077.554882,207843.0
+four_week,four_week,S2_bess20pct,ok,1897,6778,672,2677770127225.82,18800764760.654152,199448.0
+four_week,four_week,S2_bess35pct,ok,1897,6778,672,9222714403904.314,6819627426.019959,1558845.0
+four_week,four_week,S0,"error: Solver did not return a loadable solution (status=aborted, termination_condition=maxTimeLimit).",3060,8482,672,,,
+four_week,four_week,S1,"error: Solver did not return a loadable solution (status=aborted, termination_condition=maxTimeLimit).",3060,8482,672,,,

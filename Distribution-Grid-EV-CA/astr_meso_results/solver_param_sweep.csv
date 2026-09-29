@@ -1,0 +1,7 @@
+config,params,wall_s,certified,hit_limit,ok,last_obj,last_primal_inf,last_dual_inf,last_s,dual_inf_min_tail,dual_inf_max_tail,total_iters,solve_s,objective
+baseline,{},2913.2,False,True,True,2009403100.0,0.0,13399.99,2398,424.3103,13704.07,,,
+quad,"{""Quad"": 1}",2984.5,False,True,True,1996441900.0,0.0,35.93137,2394,35.82528,11974.92,,,
+scale_std,"{""ScaleFlag"": 1}",1527.9,True,False,True,1969024900.0,0.0,0.0,1012,0.0,698401000000.0,3768778.0,1011.89,1969024916.0
+scale_geo672,"{""ScaleFlag"": 3}",2782.7,False,True,True,1975243600.0,0.0,15933.26,2396,67.76815,26337.73,,,
+presolve1,"{""Presolve"": 1}",2804.3,False,True,True,2002696400.0,0.0,3398.462,2396,55.23165,3751.639,,,
+numfocus3,"{""NumericFocus"": 3}",2769.9,False,True,True,2002696400.0,0.0,3398.462,2396,55.23165,3751.639,,,

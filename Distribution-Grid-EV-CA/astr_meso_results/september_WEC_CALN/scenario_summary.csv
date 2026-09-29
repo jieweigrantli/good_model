@@ -1,0 +1,5 @@
+tag,horizon,scenario,status,objective,co2_kg,n_nodes,n_edges,n_hours,binding_line_hours
+september_WEC_CALN,weekly,S0,ok,14094095330.698616,5852354834.450398,916,2792,168,7958
+september_WEC_CALN,weekly,S1,ok,15590630546.396616,5847294062.769978,916,2792,168,8134
+september_WEC_CALN,weekly,S2,ok,15592669765.819769,5849481992.463219,916,2792,168,8067
+september_WEC_CALN,weekly,S3,ok,12326614598.02584,5843076797.463177,916,2792,168,3816

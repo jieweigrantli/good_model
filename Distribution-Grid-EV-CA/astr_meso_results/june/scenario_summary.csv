@@ -1,0 +1,4 @@
+season,scenario,status,tag,horizon,objective,co2_kg,n_nodes,n_edges,n_hours,binding_line_hours
+,S0,ok,june,weekly,3011834723.3228183,5554988284.755735,3060.0,9556.0,168.0,42097.0
+,S1,"error: Solver did not return a loadable solution (status=aborted, termination_condition=maxTimeLimit).",june,weekly,,,3060.0,9556.0,168.0,
+,S3,ok,june,weekly,1281374151.9930315,5612143459.55028,3060.0,9556.0,168.0,5534.0
