@@ -12,8 +12,8 @@ I am a PhD researcher at the Institute of Transportation Studies, UC Davis, work
 Professor Alan Jenn on a study of how electric vehicle charging demand interacts with
 California's electricity delivery system. The work extends the feeder-level analysis
 published by Li and Jenn in *PNAS* (2024), "Impact of electric vehicle charging demand on
-power distribution grid congestion," which used SDG&E Grid Needs Assessment data alongside
-PG&E and SCE Integration Capacity Analysis results.
+power distribution grid congestion," which used SDG&E and PG&E Integration Capacity Analysis
+results alongside SCE Grid Needs Assessment data.
 
 Our current study adds a transmission-constrained layer, so we need to attach EV charging
 demand to the substations that actually serve it rather than to the nearest substation
@@ -62,6 +62,10 @@ jwgli@ucdavis.edu
 
 ## Notes before sending
 
+- **Ask Alan first.** He is a co-author of Li & Jenn (2024), and that paper used SDG&E ICA
+  data with hourly resolution. Whatever route they took to obtain it is a faster and more
+  certain path than a cold request, and he may simply still have the files. This email is the
+  fallback if that route has gone stale.
 - Confirm Alan Jenn's preferred email address and whether he wants to be cc'd or to send it
   himself; a request from a faculty PI often moves faster.
 - If there is an existing CPUC docket contact for the Distribution Resources Plan
