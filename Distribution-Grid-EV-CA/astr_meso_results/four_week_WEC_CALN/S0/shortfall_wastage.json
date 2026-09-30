@@ -1,9 +1,9 @@
 {
-  "shortfall_MWh": 74752.71143420614,
-  "wastage_MWh": 169077.21578521747,
-  "shortfall_GWh": 74.75271143420613,
-  "wastage_GWh": 169.07721578521748,
-  "dumped_surplus_GWh": 169.07721578521748,
+  "shortfall_MWh": 74824.82563763842,
+  "wastage_MWh": 169077.2157852175,
+  "shortfall_GWh": 74.82482563763843,
+  "wastage_GWh": 169.0772157852175,
+  "dumped_surplus_GWh": 169.0772157852175,
   "vre_curtailment_GWh": 0.0,
   "top_shortfall_nodes": [
     [
@@ -43,8 +43,8 @@
       3365.9278433227537
     ],
     [
-      "SUB_HIFLD_138",
-      2143.629926025391
+      "SUB_HIFLD_142",
+      2196.754612529779
     ]
   ],
   "top_wastage_nodes": [

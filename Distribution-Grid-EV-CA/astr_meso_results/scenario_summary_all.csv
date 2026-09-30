@@ -1,0 +1,23 @@
+tag,horizon,scenario,status,n_nodes,n_edges,n_hours,objective,co2_kg,binding_line_hours,season
+four_week,four_week,S2,dry_run,1897.0,6778.0,672.0,,,,
+four_week,four_week,S3,"error: Solver did not return a loadable solution (status=error, termination_condition=error).",1897.0,6778.0,672.0,,,,
+four_week,four_week,S2_bess10pct,ok,1897.0,6778.0,672.0,2551761017035.5063,18014106077.554882,207843.0,
+four_week,four_week,S2_bess20pct,ok,1897.0,6778.0,672.0,2677770127225.82,18800764760.654152,199448.0,
+four_week,four_week,S2_bess35pct,ok,1897.0,6778.0,672.0,9222714403904.314,6819627426.019959,1558845.0,
+four_week,four_week,S0,"error: Solver did not return a loadable solution (status=aborted, termination_condition=maxTimeLimit).",3060.0,8482.0,672.0,,,,
+four_week,four_week,S1,"error: Solver did not return a loadable solution (status=aborted, termination_condition=maxTimeLimit).",3060.0,8482.0,672.0,,,,
+march,weekly,S0,ok,16.0,68.0,,127809623.3404518,2190226428.466094,,march
+march,weekly,S1,ok,96.0,540.0,,100954234.41160086,1871219810.2963436,,march
+march,weekly,S2,ok,96.0,540.0,,135319603.03272244,2213032805.8520503,,march
+march,weekly,S3,ok,96.0,540.0,,62458610.119386666,690132730.6844392,,march
+june,weekly,S0,ok,3060.0,9556.0,168.0,3011834723.3228183,5554988284.755735,42097.0,
+june,weekly,S1,"error: Solver did not return a loadable solution (status=aborted, termination_condition=maxTimeLimit).",3060.0,9556.0,168.0,,,,
+june,weekly,S3,ok,3060.0,9556.0,168.0,1281374151.9930315,5612143459.55028,5534.0,
+september,weekly,S0,ok,16.0,68.0,,176191261.23058915,4417987378.800944,,september
+september,weekly,S1,ok,96.0,540.0,,149813896.83370006,4141706818.396665,,september
+september,weekly,S2,ok,96.0,540.0,,163561150.9470285,4298116669.481766,,september
+september,weekly,S3,ok,96.0,540.0,,84157739.93183424,1897383408.967451,,september
+december,weekly,S0,ok,16.0,68.0,,146406003.30387872,2170759278.743773,,december
+december,weekly,S1,ok,96.0,540.0,,121702318.15475193,1803364958.707367,,december
+december,weekly,S2,ok,96.0,540.0,,134514227.0549411,1909569602.0267875,,december
+december,weekly,S3,ok,96.0,540.0,,75271757.84425162,749283200.9699024,,december
