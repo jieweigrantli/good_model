@@ -1122,6 +1122,82 @@ batteries could charge but never discharge. Charged energy (175.10 GWh) exceeds
 discharged by 10.0%, which is the round-trip loss and confirms the 0.90 efficiency
 survived `from_v1`'s storage override.
 
+### S5: transmission sized to observed overload
+
+S3 and S4 multiply every corridor by ten. That answers "what is corridor
+congestion costing if delivery were free", but it is a diagnostic and not a
+build, so the benefit it reports cannot be costed. **S5** replaces it for
+reporting: `08_15_size_transmission_to_overload.py` reads S3's per-corridor peak
+flows and sets each corridor to the capacity the unconstrained optimum actually
+wanted, exactly as `08_14` sizes the battery fleet from observed curtailment.
+
+The rule is Li & Jenn's (2024), adopted because it is the published method this
+project is anchored to:
+
+* **Upgrade need = maximum overload over the horizon.** Their feeder rule is
+  `max_t(baseload + EV - capacity)` clipped at zero, taken at the single worst
+  hour with no averaging. The corridor equivalent is
+  `max_t(flow) - capacity` read off a run where that corridor was not binding.
+* **Only the overload is costed**, not replacement of the whole line.
+* **Congestion is reported in their two metrics** so the numbers are comparable
+  with their feeder results: *overload intensity* = peak wanted / rating, and
+  *overload frequency* = binding hours / all hours.
+
+One difference is structural. Li & Jenn can subtract, because feeder load is
+given. Flow on a meshed network is a decision, so the "load" a corridor would
+carry has to come from a solve in which it was free — which is why the 10x
+scenarios are kept as the diagnostic that sizes S5, rather than deleted.
+
+Measured on the four-week PG&E run:
+
+| | |
+|---|---:|
+| corridors needing an upgrade | 158 of 3,090 (5.1%) |
+| capacity actually required | 11,838 MW |
+| capacity the 10x relaxation grants | 6,522,044 MW |
+| fraction of the grant that does work | **0.182%** |
+| overload intensity | median 1.76, max 10.0 |
+| overload frequency | median 0.21, max 1.00 |
+
+**S5 reproduces S3 exactly**: identical shortfall (29.9905 GWh), identical spill
+(91.4654 GWh) and an identical objective to the cent ($924,170,694.48). That is a
+consequence rather than a coincidence — sizing each corridor to
+`max(base, S3 peak)` makes S3's operating point feasible in S5, and S5's feasible
+region is a subset of S3's, so the S3 optimum is S5's optimum. The whole
+corridor-congestion benefit is therefore available from **11,838 MW rather than
+6.5 TW**, and `P_cong` becomes costable.
+
+CO2 differs by 325 t (0.005%) between the two, which is the degenerate-optimum
+spread at equal total cost and supersedes the earlier 177 t noise-floor estimate
+(that pair predated the gateway fix below). Against a 325 t floor, `P_cong` sits
+97x, `P_cong'` 65x and `M_BESS` 28x.
+
+### Indicative cost comparison
+
+Annualising the four seasonal weeks by 13 gives 410,241 t/yr for the transmission
+build and 116,935 t/yr for the storage fleet.
+
+| | overnight | annualised | $ per t |
+|---|---:|---:|---:|
+| transmission, 11,838 MW @ $240/kW (25th pct), 40 yr | $2.84B | $71M/yr | **$173** |
+| transmission @ $456/kW (median) | $5.40B | $135M/yr | $329 |
+| transmission @ $800/kW (75th pct) | $9.47B | $237M/yr | $577 |
+| storage, 550 MW @ $1,977/kW (EPA 4-hour), 15 yr | $1.09B | $72M/yr | **$620** |
+
+Storage is cheaper to build and more effective per MW (16.35 against 2.67 t/MW,
+6.1x) but more expensive per tonne avoided, because the transmission build lasts
+40 years against 15 and carries no round-trip loss.
+
+**Four caveats, and the first is the one that matters.** The per-kW transmission
+bracket is Li & Jenn's, and theirs is for **distribution feeder** projects from
+PG&E's Distribution Investment Deferral Framework. The corridors here are
+sub-transmission and transmission, so applying it is a placeholder; a
+transmission-appropriate $/MW-mile source with line lengths from `09_01` would
+replace it. Second, the 13x seasonal extrapolation assumes the four weeks
+represent the year. Third, nothing is discounted — these are straight-line
+annualisations, not levelised costs. Fourth, `M_BESS` is itself an upper bound
+because cycling is unpriced, so storage's $/t is if anything understated.
+
 ### Storage against transmission: why the two are not substitutes
 
 On every absolute measure the transmission relaxation does more than the battery
