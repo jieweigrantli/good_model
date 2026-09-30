@@ -1247,16 +1247,42 @@ required circuit count.
 Two features of that table matter more than the total.
 
 **42% of the build is not a line.** 4,916 MW sits on 42 BA interfaces, which are
-not corridors at all: 09_01 derives an interface capacity from the external
-transmission a voltage gateway sees *beyond* the modelled network, so there is no
-route, no length and no voltage. They are costed as substation capacity at
-$75,000–250,000 per MVA and flagged, because a per-mile figure would be fiction.
+not corridors: `09_01` gives a substation an interface when high-voltage lines land
+on its busbar whose *other end is outside the modelled network*, and sizes it as
+`raw incident HV capacity − modelled incident capacity`, i.e. only the capacity
+that leaves the graph. So the interface is a lumped stand-in for real lines whose
+route, length and far-end substation are all unknown to the model, and a per-mile
+figure cannot be computed for it.
 
-**The build is sub-transmission, not bulk transmission.** 60–115 kV carries 4,738
-of the 11,838 MW against 1,124 MW at 200–230 kV, which is why the feeder-cost
-placeholder was wrong in both directions — too expensive per MW for the
-sub-transmission bulk, and the right source only for the 18 arcs at 12 and 4.16 kV
-(247 MW), where it is now used and only there.
+Of the 42, **34 arcs (4,744 MW) are real `voltage_gateway`s** and 8 arcs (173 MW)
+are `restriction_gateway`s — synthetic feeds `_restrict_network` adds to stop
+PG&E-only components from being islanded. That 173 MW is an artifact of running one
+balancing area and is not a project at all.
+
+They are costed as substation capacity at $75,000–250,000 per MVA, and that is the
+**conservative** choice rather than a lower bound. Delivered instead as 115 kV
+circuits of the length typical here (16.3 capacity-weighted miles), the same
+4,916 MW would cost $0.25–0.48B against $0.37–1.23B as substation capacity, taking
+the whole build to $1.77–3.18B rather than $1.89–3.93B. Transmission lines move
+enough MW per circuit to be cheap per MW; transformer capacity is not. So if these
+interfaces turn out to be line projects, the cost falls and the conclusion
+strengthens.
+
+**The build is sub-transmission, not bulk transmission.** 60–115 kV carries 5,551
+of the 11,838 MW against 1,124 MW at 200–230 kV. That is why a single per-kW
+bracket cannot serve the whole build: costed per class, sub-transmission comes in at
+$135–285/kW while 200–230 kV comes in at $593–1,112/kW, a four-fold spread that no
+one number spans.
+
+Every class does *overlap* Li & Jenn's $240–800/kW bracket, so it is not that the
+bracket is wrong everywhere — it is too wide and mis-centred for this build.
+Sub-transmission sits on its floor and 230 kV on its ceiling, and because
+sub-transmission carries most of the MW, applying the **median** ($456/kW) costs the
+build at $5.40B against the $1.89–3.93B the line-based method gives. Its 25th
+percentile, $2.84B, happens to land inside that range by coincidence rather than by
+being the right basis. The bracket is used now only for the 18 arcs at 12 and
+4.16 kV (247 MW), where distribution feeder projects are genuinely the right
+comparator.
 
 Terminal equipment — two positions for each of 220 new circuits — is $205M, 8–14%
 of the line total.
