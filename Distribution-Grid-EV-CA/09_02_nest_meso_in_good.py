@@ -164,10 +164,20 @@ def _restrict_network(network: dict, nested_bas: set[str]) -> dict:
     ba_of = {n["hub_id"]: n.get("parent_ba") for n in out["nodes"]}
 
     added = 0
-    for comp in nx.connected_components(gg):
+    # Components and their anchors are both ordered explicitly. `max()` over a
+    # set breaks ties by iteration order, which for strings depends on the
+    # per-process hash seed, so islanded components whose substations all share
+    # the same peak -- typically all sitting on the 5 MW MIN_RATING_W floor --
+    # got a different gateway substation in every process. Two runs of the same
+    # scenario therefore built 3,090 arcs each but not the *same* 3,090: six
+    # differed between S1 and S3. That silently moved a 5 MW synthetic feed from
+    # one substation to another between scenarios, which is both a
+    # reproducibility defect and enough to break any per-corridor join across
+    # two runs. Tie-break on the handle so the choice is stable.
+    for comp in sorted(nx.connected_components(gg), key=lambda c: sorted(c)[0]):
         if comp & have_iface:
             continue
-        anchor = max(comp, key=lambda h: peak.get(h, 0.0))
+        anchor = max(sorted(comp), key=lambda h: (peak.get(h, 0.0), h))
         cap = max(sum(peak.get(h, 0.0) for h in comp), 5e6)
         out["ba_interfaces"] = list(out["ba_interfaces"]) + [{
             "hub_id": anchor,
@@ -282,6 +292,7 @@ def build_nested_graph(
     bess_top_n: int = 0,
     bess_hub_override: set[str] | None = None,
     only_ba: set[str] | None = None,
+    line_spec: dict | None = None,
 ) -> dict:
     """``only_ba`` nests just those balancing areas at substation level.
 
@@ -422,11 +433,29 @@ def build_nested_graph(
         g["nodes"].append(node)
         existing_ids.add(hid)
 
+    # Per-corridor target capacity from 08_15, keyed by line handle. It overrides
+    # the blanket scale factor rather than multiplying it: the two answer different
+    # questions and applying both would silently compound them.
+    n_sized = 0
+    sized_w = 0.0
+
+    def _capacity(handle: str, scaled_w: float) -> float:
+        nonlocal n_sized, sized_w
+        if line_spec is None:
+            return scaled_w
+        target = line_spec.get(handle)
+        if target is None:
+            return scaled_w
+        n_sized += 1
+        sized_w += float(target)
+        return float(target)
+
     for e in network.get("edges") or []:
         cap = float(e["installed_capacity_W"]) * capacity_scale_meso
         s, t = e["source"], e["target"]
         for src, tgt, tag in ((s, t, "fwd"), (t, s, "rev")):
             handle = f"meso_{src}_{tgt}_{tag}"
+            cap_w = _capacity(handle, cap)
             g["edges"].append(
                 {
                     # The Link id must differ from the line handle. GOOD 2.x keeps
@@ -439,7 +468,7 @@ def build_nested_graph(
                     "_class": "Link",
                     "source": src,
                     "target": tgt,
-                    "lines": {handle: make_transmission_line(src, tgt, cap, handle)},
+                    "lines": {handle: make_transmission_line(src, tgt, cap_w, handle)},
                 }
             )
 
@@ -448,15 +477,20 @@ def build_nested_graph(
         cap = float(e["interface_capacity_W"]) * capacity_scale_interface
         for src, tgt, tag in ((ba, hid, "to_hub"), (hid, ba, "to_ba")):
             handle = f"iface_{src}_{tgt}_{tag}"
+            cap_w = _capacity(handle, cap)
             g["edges"].append(
                 {
                     "id": f"{src}:{tgt}",   # distinct from the line handle; see above
                     "_class": "Link",
                     "source": src,
                     "target": tgt,
-                    "lines": {handle: make_transmission_line(src, tgt, cap, handle)},
+                    "lines": {handle: make_transmission_line(src, tgt, cap_w, handle)},
                 }
             )
+
+    if line_spec is not None:
+        print(f"  transmission sized to observed overload: {n_sized:,} of "
+              f"{len(g['edges']):,} arcs set explicitly, {sized_w / 1e6:,.0f} MW total")
 
     return g
 

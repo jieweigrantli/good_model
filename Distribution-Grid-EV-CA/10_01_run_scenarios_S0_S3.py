@@ -942,6 +942,7 @@ def run_horizon(
     fix_capex_from: Path | None = None,
     no_capex: bool = False,
     bess_csv: Path | None = None,
+    line_csv: Path | None = None,
 ) -> pd.DataFrame:
     import good
     from good import migrate
@@ -1027,6 +1028,16 @@ def run_horizon(
         print(f"  BESS spec from {bess_csv}: {len(bess_spec):,} nodes, "
               f"{bs['power_MW'].sum():,.0f} MW / {bs['energy_MWh'].sum():,.0f} MWh")
 
+    # Per-corridor target capacity from 08_15, replacing the blanket 10x scale.
+    line_spec = None
+    if line_csv is not None:
+        ls = pd.read_csv(line_csv)
+        line_spec = {str(r["line"]): float(r["target_capacity_W"]) for _, r in ls.iterrows()}
+        need = ls["need_MW"] if "need_MW" in ls.columns else None
+        print(f"  transmission spec from {line_csv}: {len(line_spec):,} arcs"
+              + (f", {int((need >= 0.1).sum()):,} upgraded, {need.sum():,.0f} MW added"
+                 if need is not None else ""))
+
     bess_hub_override = None
     if bess_congestion_frac is not None:
         s1_line_flows = out_root / "S1" / "line_flows_summary.csv"
@@ -1052,6 +1063,7 @@ def run_horizon(
             bess_top_n=bess_top_n,
             bess_hub_override=scen_bess_override,
             only_ba=only_ba,
+            line_spec=line_spec,
         )
         if no_capex:
             nlg = _disable_capex_nlg(nlg, prescribe_bess=True)
@@ -1353,6 +1365,14 @@ def main() -> None:
         "the deficit and left 775 of 786 batteries idle.",
     )
     parser.add_argument(
+        "--line-csv",
+        default=None,
+        help="Per-corridor target capacity from 08_15_size_transmission_to_overload.py. "
+             "Overrides the blanket --scenarios S3/S4 scale factor for the arcs it names, "
+             "so the relaxation is sized to the overload actually observed rather than "
+             "multiplying every corridor by ten. Use with --scenarios S5.",
+    )
+    parser.add_argument(
         "--no-capex",
         action="store_true",
         help="Dispatch the as-built system: close every CAPEX decision so no new "
@@ -1409,6 +1429,14 @@ def main() -> None:
         # implies new lines and the other implies substation upgrades.
         "S4": {"meso": 10.0, "interface": 10.0, "transformer": 10.0,
                "bess": False, "ev": True},
+        # S5 is S3's question answered with a build instead of a multiplier. The
+        # scale factors are 1.0 because --line-csv sets each corridor explicitly
+        # from the overload 08_15 measured, following Li & Jenn's feeder rule
+        # (upgrade = maximum overload over the horizon, cost only the overload).
+        # S3 grants 6,521,774 MW to get its 31,700 t; only 11,830 MW of that does
+        # any work, so S5 is what makes P_cong costable and comparable with the
+        # 550 MW storage fleet in S2. Requires --line-csv.
+        "S5": {"meso": 1.0, "interface": 1.0, "bess": False, "ev": True},
     }
     for key, spec in optional_scales.items():
         if args.scenarios and key in args.scenarios and key not in scales:
@@ -1468,6 +1496,7 @@ def main() -> None:
                 fix_capex_from=Path(args.fix_capex_from) if args.fix_capex_from else None,
                 no_capex=args.no_capex,
                 bess_csv=Path(args.bess_csv) if args.bess_csv else None,
+                line_csv=Path(args.line_csv) if args.line_csv else None,
             )
     else:
         run_horizon(
@@ -1484,6 +1513,7 @@ def main() -> None:
             fix_capex_from=Path(args.fix_capex_from) if args.fix_capex_from else None,
             no_capex=args.no_capex,
             bess_csv=Path(args.bess_csv) if args.bess_csv else None,
+            line_csv=Path(args.line_csv) if args.line_csv else None,
         )
     print(f"\nResults under {C.ASTR_RESULTS_DIR}")
 
