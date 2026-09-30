@@ -375,7 +375,33 @@ Ordered by how much they could move a result.
 | BESS capex / duration / efficiency | 2.1 $/W, 4 h, 0.90 | -- | low for the as-built runs, where capex is not charged at all |
 | `EV_HOME_SHARE` | 0.68 | split of charging to home | medium, untested here |
 | corridor snapping | 1,500 m substation, 400 m hub precedence, 250 m split | reconstruct corridors from line geometry | medium -- MST contraction replaced clique after a 499 km spurious corridor |
-| solver | `ScaleFlag=1`, `BarConvTol` 1e-7, `OptimalityTol` 1e-5 | ScaleFlag=2 made the 672 h LP unsolvable | low -- but see the 0.10% noise floor |
+| solver | `Method=2`, `Crossover=-1`, `BarConvTol` 1e-8; ScaleFlag, NumericFocus, Aggregate and OptimalityTol at Gurobi defaults | the v1 pins (`ScaleFlag=1` above all) existed to survive the $/J formulation's 13-order coefficient spread, which the GOOD 2.x units removed | low -- but the objective is **not** a convergence diagnostic here; see 0.5 |
+| storage duration, existing pumped hydro | 10 h | upstream `migrate.ASSUMPTIONS` (marked PLACEHOLDER); v1 assumed 8 h | low-medium -- a 25% change in pumped hydro energy capacity, inherited rather than chosen |
+| VRE curtailment measurement | availability minus production, solar and wind only, excluding energy-budget assets | GOOD 2.x makes solar and wind curtailable `Producer`s, so spill no longer appears as node `wastage` (which is now exactly zero) | medium -- the exclusions matter: counting budget-limited hydro reported 1,932 GWh against a true 40.5 GWh |
+
+### 0.5 Reproducibility of the objective
+
+The objective is dominated by unserved energy priced at a $10,000/MWh value of
+lost load, which makes it a poor convergence diagnostic for this model. Five
+certified-optimal solves of the identical PG&E March week returned objectives
+spanning 0.214% ($572,238):
+
+| configuration | time | objective | shortfall |
+|---|---:|---:|---:|
+| `Crossover=-1` | 44.8 s | 2.675762e8 | 14.333 GWh |
+| `Crossover=1` | 44.0 s | 2.676289e8 | 14.338 GWh |
+| `Crossover=1` (repeat) | ~45 s | 2.680771e8 | 14.383 GWh |
+| `Crossover=1` (repeat) | 43.7 s | 2.681484e8 | 14.390 GWh |
+| `Method=1` (dual simplex) | 53.1 s | 2.678213e8 | 14.358 GWh |
+
+The 57.0 MWh of shortfall these disagree about is worth $570,000 at VOLL on its
+own, which is 100.4% of the observed objective spread. Over the same five runs
+total CO2 was identical to the printed precision and curtailment agreed to within
+0.2%. `Crossover=1` is additionally not reproducible run to run.
+
+Runs should therefore be compared on **CO2, shortfall GWh and curtailment GWh**,
+not on the objective. An objective that moves a few tenths of a percent means a
+few tens of MWh of shortfall moved.
 
 ### 0.3 Data deficits
 
