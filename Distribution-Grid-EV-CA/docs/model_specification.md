@@ -982,8 +982,71 @@ Builder-side columns (`installed_capacity_W`, `interface_capacity_W`,
 The two-stage capex files are in MW, and `_fix_capex_nlg` /
 `_apply_capex_floor_nlg` convert back to watts on the way into the graph.
 
+### Validation against the certified 1.x results
+
+Four-week PG&E-only S0 and S1, `--no-capex`, against the certified 1.x numbers.
+The middle column is before the relocated-plant profile fix described below, and
+is shown because it is what isolates that bug's effect.
+
+| | | 1.x certified | 2.x before fix | 2.x | vs 1.x |
+|---|---|---:|---:|---:|---:|
+| S0 | CO2 | 6.5194 Mt | 6.290 Mt | 6.4170 Mt | −1.57% |
+| | shortfall | 74.65 GWh | 74.74 GWh | 74.75 GWh | **+0.14%** |
+| | spill | 164.5 GWh | 201.8 GWh | 169.1 GWh | +2.78% |
+| S1 | CO2 | 6.7698 Mt | 6.531 Mt | 6.6546 Mt | −1.70% |
+| | shortfall | 91.02 GWh | 91.10 GWh | 91.11 GWh | **+0.10%** |
+| | spill | 163.3 GWh | 200.6 GWh | 167.9 GWh | +2.81% |
+| | EV delta | 250,400 t | 241,000 t | 237,587 t | −5.1% |
+
+Solve time fell from 1,012 s to 292 s for S0; S1 took 374 s.
+
+Shortfall reproduces to within 0.14%, which is the result that matters most:
+shortfall is where the transmission ratings and substation transformer limits
+show up, so it is the part of the model this project exists to measure. CO2 and
+spill each sit a consistent offset away in both scenarios (−1.6% and +2.8%),
+which points at a systematic modelling difference rather than noise — the VRE
+reclassification, which changes both the curtailment decision and the RPS
+numerator.
+
+### A bug this validation exposed
+
+Solar produced 395 GWh *above* its own availability, which should be impossible.
+The cause was in `09_02`, not in the migration: 39 VRE plants (588 MW) given
+their own switchyards referenced a profile key held on their parent BA node, and
+the nesting code copied profiles from the *substation's* BA. A switchyard's BA
+comes from its location while a generator carries its own from the WECC data, so
+SCE plants do legitimately land on PG&E switchyards, and their profile key was
+not on the node. GOOD 2.x resolves a missing profile to a flat 1.0 in every hour,
+so those 39 solar plants ran at nameplate through the night: 588 MW x 672 h =
+395.1 GWh of phantom renewable generation, counted into the RPS numerator and
+displacing fossil.
+
+Profiles now follow the generator. The fix raised CO2 by 2.0% and cut spill by
+16%, which took the gap against 1.x from −3.5% to −1.6% on CO2 and from +23% to
++2.8% on spill, while leaving shortfall unchanged. The defect predates the
+migration; 1.x simply did not turn an unresolved profile into nameplate output,
+so it stayed invisible.
+
+The 2,029 profile references that still do not resolve are all `generator:`,
+`storage:` and `geothermal:` placeholders present in `WEC_modified.json` itself.
+For a dispatchable thermal unit, no profile is the correct bound.
+
+### Why spill is dumped surplus on the four-week horizon and curtailment on a week
+
+The four-week runs report 169 GWh of spill, all of it dumped surplus, with VRE
+curtailment at exactly zero. The single March week reports the reverse: 40.5 GWh,
+all VRE curtailment, nothing dumped.
+
+Both are consistent with the RPS being a horizon-summed ratio. Over four seasonal
+weeks it binds hard enough to hold every VRE unit at full output, so surplus that
+cannot be delivered has to be dumped at the node. Over a single March week —
+California's high-hydro, high-wind season — the RPS is slack and the model is free
+to curtail VRE instead. This is why `wastage_GWh` reports the sum of the two: the
+physical quantity is the same and only the mechanism the optimiser reaches for
+changes with the horizon.
+
 ### Not yet done
 
-The four-week S0–S4 scenario set has not been re-run on v2, so the certified
-1.x results in section 11 stand as the current numbers. They are not directly
-comparable to what v2 will produce, for the VRE reclassification reason above.
+S2, S3, S4 and S0R have not been re-run on v2, so the section 11 numbers stand
+for those. S2 needs the BESS fleet re-sized against the new spill figures, since
+`08_14` reads the curtailment file this migration changed.

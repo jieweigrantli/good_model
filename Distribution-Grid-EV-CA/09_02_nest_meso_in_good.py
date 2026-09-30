@@ -381,8 +381,22 @@ def build_nested_graph(
                 )
         ba = rec.get("parent_ba")
         profiles.update(orig_profiles.get(ba, {}))
+        # Profiles have to follow the generator, not the substation. A relocated
+        # plant references a profile key on its *own* BA node ("WECC_SCE:solar:"),
+        # and a switchyard's parent BA is not always the BA the plant belongs to:
+        # the BA assignment comes from the substation's location while the
+        # generator carries its own from the WECC data, so SCE plants do land on
+        # PG&E switchyards. Copying only `ba`'s profiles left 39 relocated VRE
+        # plants (588 MW) referencing a key their node did not have. GOOD 2.x then
+        # resolves a missing profile to a flat 1.0 for every hour, so those 39
+        # solar plants ran at nameplate through the night -- 588 MW x 672 h =
+        # 395 GWh of phantom renewable generation on the four-week run, counting
+        # into the RPS numerator and displacing fossil.
         for grec in gen_by_hub.get(hid, []):
-            src = orig_assets.get(grec["parent_ba"], {}).get(grec["handle"])
+            gen_ba = grec.get("parent_ba")
+            if gen_ba and gen_ba != ba:
+                profiles.update(orig_profiles.get(gen_ba, {}))
+            src = orig_assets.get(gen_ba, {}).get(grec["handle"])
             if not src:
                 continue
             asset = deepcopy(src)
