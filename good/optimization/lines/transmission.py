@@ -77,6 +77,11 @@ class Transmission(Line):
         net.add_injection(-flow, labels(cls, objs, lambda o: o.source))
         net.add_injection(flow * efficiency, labels(cls, objs, lambda o: o.target))
 
+        # Same terms again, tracked separately so Region can cap net import at a
+        # step-down transformer rating. See Network.add_import.
+        net.add_import(-flow, labels(cls, objs, lambda o: o.source))
+        net.add_import(flow * efficiency, labels(cls, objs, lambda o: o.target))
+
         cost = param(cls, objs, lambda o: o.p.operating_cost)
 
         net.add_cost((flow * cost).sum() * net.time_step)

@@ -125,6 +125,12 @@ class RegionParams(ComponentParams):
     shortfall_cost: Optional[float] = Field(None, ge=0, description="Cost of unserved energy ($/MWh).")
     wastage_capacity: Optional[float] = Field(None, ge=0, description="Maximum dumped surplus per step (MW).")
     wastage_cost: Optional[float] = Field(None, ge=0, description="Cost of dumping surplus energy ($/MWh).")
+    transformer_capacity: Optional[float] = Field(
+        None, ge=0,
+        description="Maximum NET IMPORT over lines per step (MW). The step-down "
+                    "transformer bank between the transmission network and local "
+                    "load. Unset means no limit.",
+    )
 
 
 class LinkParams(ComponentParams):

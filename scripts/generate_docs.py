@@ -130,13 +130,16 @@ def main(check=False):
 
         if check:
 
-            if not path.exists() or path.read_text() != text:
+            # encoding is explicit: without it Windows uses cp1252, which both
+            # mangles the non-ASCII characters in these tables and makes the
+            # comparison below never match, so check=True always reports stale.
+            if not path.exists() or path.read_text(encoding="utf-8") != text:
 
                 stale.append(name)
 
         else:
 
-            path.write_text(text)
+            path.write_text(text, encoding="utf-8")
 
     return stale
 

@@ -343,6 +343,20 @@ class Network:
 
         self._injections.append((expression, region))
 
+    def add_import(self, expression, region):
+        '''Add a (class, time) line-flow term to each object's region.
+
+        Separate from :meth:`add_injection` because a transformer limit applies
+        to what crosses the step-down bank, not to everything in the region's
+        balance. Local generation does not pass through the transformer, so a
+        substation with its own plant must not have that plant counted against
+        the bank -- and a generation switchyard, which exports, must not be
+        capped at all. Summed over both directions this is net import, negative
+        where a region is a net exporter.
+        '''
+
+        self._imports.append((expression, region))
+
     def add_fixed_injection(self, values, region):
         '''Add a constant (class, time) injection; demand is negative.'''
 
@@ -360,6 +374,15 @@ class Network:
         '''Balance contributions summed by region, each covering every region.'''
 
         for expression, region in self._injections:
+
+            region = region.rename("region")
+
+            yield expression.groupby(region).sum().reindex(region=self.regions)
+
+    def imports(self):
+        '''Line-flow contributions summed by region; net import where positive.'''
+
+        for expression, region in self._imports:
 
             region = region.rename("region")
 
@@ -399,6 +422,7 @@ class Network:
 
         self.model = linopy.Model(force_dim_names=True)
         self._injections, self._fixed, self._costs = [], [], []
+        self._imports = []
 
         timings = {}
 

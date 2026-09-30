@@ -16,6 +16,7 @@ Node class. One per balancing region.
 | `shortfall_cost` | unset | Cost of unserved energy ($/MWh). |
 | `wastage_capacity` | unset | Maximum dumped surplus per step (MW). |
 | `wastage_cost` | unset | Cost of dumping surplus energy ($/MWh). |
+| `transformer_capacity` | unset | Maximum NET IMPORT over lines per step (MW). The step-down transformer bank between the transmission network and local load. Unset means no limit. |
 
 ## Link
 
