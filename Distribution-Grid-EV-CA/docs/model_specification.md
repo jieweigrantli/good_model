@@ -1223,7 +1223,98 @@ So 12,846 t is a hard ceiling for storage sited this way, against 31,557 t for
 corridors — storage can capture at most **41%** of what corridor relief captures,
 and only by building ten times the power.
 
-### Part 2: build range and cost per tonne
+### Part 2: build range and levelised cost per tonne
+
+Costed by `10_10_cost_transmission_vs_storage.py`, which replaces the earlier
+per-kW placeholder. That placeholder used Li & Jenn's bracket, which is drawn from
+PG&E's **distribution feeder** projects, while most of what 08_15 wants upgraded
+is sub-transmission. Each corridor is now costed from its own voltage, length and
+required circuit count.
+
+#### What the sizing turns out to contain
+
+| class | arcs | MW | circuits | route-miles | overnight |
+|---|---:|---:|---:|---:|---|
+| BA interface (substation capacity) | 42 | 4,916 | — | — | $0.37–1.23B |
+| 115 kV corridor | 30 | 2,714 | 42 | 526 | $0.37–0.68B |
+| 60 kV corridor | 48 | 2,024 | 74 | 657 | $0.29–0.50B |
+| 230 kV corridor | 8 | 1,046 | 34 | 228 | $0.62–1.00B |
+| 70 kV corridor | 11 | 813 | 25 | 181 | $0.13–0.23B |
+| distribution voltage | 18 | 247 | 44 | 91 | $0.06–0.20B |
+| 200 kV corridor | 1 | 78 | 1 | 42 | $0.05–0.09B |
+| **total** | **158** | **11,838** | **220** | **1,726** | **$1.89–3.93B** |
+
+Two features of that table matter more than the total.
+
+**42% of the build is not a line.** 4,916 MW sits on 42 BA interfaces, which are
+not corridors at all: 09_01 derives an interface capacity from the external
+transmission a voltage gateway sees *beyond* the modelled network, so there is no
+route, no length and no voltage. They are costed as substation capacity at
+$75,000–250,000 per MVA and flagged, because a per-mile figure would be fiction.
+
+**The build is sub-transmission, not bulk transmission.** 60–115 kV carries 4,738
+of the 11,838 MW against 1,124 MW at 200–230 kV, which is why the feeder-cost
+placeholder was wrong in both directions — too expensive per MW for the
+sub-transmission bulk, and the right source only for the 18 arcs at 12 and 4.16 kV
+(247 MW), where it is now used and only there.
+
+Terminal equipment — two positions for each of 220 new circuits — is $205M, 8–14%
+of the line total.
+
+#### Levelised cost
+
+Levelised with a capital recovery factor rather than straight-line, because the
+assets have very different lives and straight-line flatters the longer one. At 5%
+real, CRF is 0.0583 over 40 years against 0.0963 over 15, a ratio of 1.65, where
+straight-line annualisation implied 40/15 = 2.67 in transmission's favour.
+**Discounting therefore narrows transmission's advantage rather than widening it.**
+
+| | overnight | levelised | $/t at 5% |
+|---|---:|---:|---:|
+| transmission, low | $1.89B | $110M/yr | **$268** |
+| transmission, high | $3.93B | $229M/yr | **$558** |
+| storage, 550 MW | $1.09B | $105M/yr | **$896** |
+
+Sensitivity to the rate:
+
+| rate | transmission low | transmission high | storage |
+|---|---:|---:|---:|
+| 3% | $199 | $415 | $779 |
+| 5% | $268 | $558 | $896 |
+| 7% | $345 | $719 | $1,021 |
+| 10% | $470 | $980 | $1,223 |
+
+Transmission is cheaper per tonne than storage at every rate tested and at both
+ends of its cost range. The storage supply curve below still matters, though: its
+cheapest 223 MW is a better buy than its full fleet, and at 5% that subset is
+around $660/t against $896 for all 550 MW.
+
+#### Does the corridor upgrade need transformer upgrades?
+
+No, for the emissions benefit. S5 delivers the full 31,557 t with every substation
+transformer left at its published rating, which is what makes it a proof rather
+than an estimate. Relaxing the transformers as well (S4) does not add abatement —
+it *raises* emissions by 10,825 t, because it serves 25.93 GWh of EV load that S3
+sheds. So step-down transformer capacity is a separate decision, justified by
+served load rather than by carbon, and it is deliberately excluded from the cost
+above.
+
+The build does already carry substation work, though, in two places: the 4,916 MW
+of BA-interface capacity is substation and gateway capacity rather than line, and
+the $205M of terminal equipment is bays, breakers, instrument transformers and
+protection at both ends of every new circuit.
+
+What is **not** costed, in rough order of how much it could move the total:
+undergrounding, which California urban segments can require at roughly ten times
+overhead cost and which would dominate if it applied to any material share of the
+1,726 route-miles; land and right-of-way beyond what the per-mile figures embed;
+distribution reinforcement downstream of the substations, which is outside this
+model entirely and is precisely what Li & Jenn measure; and protection and
+relaying changes on adjacent circuits that a capacity change can force.
+
+#### Storage supply curve
+
+
 
 Storage has a genuine supply curve, because each battery's discharge displaces gas
 directly and can be attributed. Capex at $1,977/kW (EPA Platform v6, 4-hour),
