@@ -269,7 +269,7 @@ def extract_hub_metrics(season: str, scenario: str) -> pd.DataFrame:
         rows[hid] = {
             "hub_id": hid,
             "ev_Wh": max(ev, 0.0),
-            "bess_discharge_Wh": max(bess, 0.0),
+            "bess_discharge_MWh": max(bess, 0.0),
             "inbound_Wh": 0.0,
             "inbound_peak_W": 0.0,
             "inbound_cap_W": 0.0,
@@ -288,7 +288,7 @@ def extract_hub_metrics(season: str, scenario: str) -> pd.DataFrame:
                 {
                     "hub_id": tgt,
                     "ev_Wh": 0.0,
-                    "bess_discharge_Wh": 0.0,
+                    "bess_discharge_MWh": 0.0,
                     "inbound_Wh": 0.0,
                     "inbound_peak_W": 0.0,
                     "inbound_cap_W": 0.0,
@@ -341,7 +341,7 @@ def compute_mitigation(before: pd.DataFrame, after: pd.DataFrame, scenario: str)
         ev = float(av["ev_Wh"]) if av is not None else (
             float(bv["ev_Wh"]) if bv is not None else 0.0
         )
-        bess = float(av["bess_discharge_Wh"]) if av is not None else 0.0
+        bess = float(av["bess_discharge_MWh"]) if av is not None else 0.0
         if scenario == "S1":
             # impact: energy delivered into hub after EV is added
             mit = after_val
@@ -362,7 +362,7 @@ def compute_mitigation(before: pd.DataFrame, after: pd.DataFrame, scenario: str)
                 "after_Wh": after_plot,
                 "mitigation_Wh": mit,
                 "ev_Wh": ev,
-                "bess_discharge_Wh": bess,
+                "bess_discharge_MWh": bess,
             }
         )
     return pd.DataFrame(rows)
@@ -444,10 +444,17 @@ def plot_all_scenario_maps() -> None:
 
 
 def _planned_bess_from_s2(season: str) -> pd.DataFrame:
-    """Read S2 solution Store assets: planned power = capex_capacity (W)."""
+    """Read S2 solution Store assets: planned power = capex_capacity (MW).
+
+    GOOD 2.x reports storage in MW/MWh, names built capacity ``new_capacity``
+    (v1: ``capex``) and gives ``discharge`` as its own series rather than folding
+    it into a signed ``production``. Reading ``discharge`` directly also avoids
+    the old summed-``production`` figure, which netted charging against
+    discharging and understated throughput.
+    """
     path = C.ASTR_RESULTS_DIR / season / "S2" / "solution.json"
     if not path.is_file():
-        return pd.DataFrame(columns=["hub_id", "planned_MW", "built_MW", "discharge_Wh"])
+        return pd.DataFrame(columns=["hub_id", "planned_MW", "built_MW", "discharge_MWh"])
     sol = json.loads(path.read_text(encoding="utf-8"))
     rows = []
     for nid, node in (sol.get("nodes") or {}).items():
@@ -456,15 +463,20 @@ def _planned_bess_from_s2(season: str) -> pd.DataFrame:
         for aname, asset in (node.get("assets") or {}).items():
             if not str(aname).startswith("bess_"):
                 continue
-            planned_w = float(asset.get("capex_capacity") or 0.0)
-            built_w = float(np.asarray(asset.get("capex", [0.0]), dtype=float).sum())
-            disc = float(np.asarray(asset.get("production", [0.0]), dtype=float).sum())
+            planned_mw = float(asset.get("capex_capacity") or 0.0)
+            built_mw = float(np.asarray(
+                asset.get("new_capacity", asset.get("capex", [0.0])), dtype=float).sum())
+            series = asset.get("discharge")
+            if series is None:
+                series = np.maximum(
+                    np.asarray(asset.get("net", asset.get("production", [0.0])), dtype=float), 0.0)
+            disc = float(np.asarray(series, dtype=float).sum())
             rows.append(
                 {
                     "hub_id": str(nid),
-                    "planned_MW": planned_w / 1e6,
-                    "built_MW": built_w / 1e6,
-                    "discharge_Wh": max(disc, 0.0),
+                    "planned_MW": planned_mw,
+                    "built_MW": built_mw,
+                    "discharge_MWh": max(disc, 0.0),
                 }
             )
     return pd.DataFrame(rows)

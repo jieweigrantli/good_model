@@ -37,6 +37,7 @@ REPO = PKG.parent
 sys.path.insert(0, str(PKG))
 sys.path.insert(0, str(REPO))
 
+import astr_v2
 import common as C
 import importlib.util
 
@@ -46,6 +47,20 @@ _spec.loader.exec_module(_nest)
 
 
 def _transform_nlg_profiles(nlg: dict, horizon: str, week: dict | None = None) -> dict:
+    """Slice every profile to the requested horizon.
+
+    Hydro is normalized to a mean-1 per-unit shape *before* slicing, over the
+    full year. GOOD 2.x expects hydro as such a shape and `migrate.from_v1`
+    produces one by calling `hydro_shape`, but that function pads to 8,760 hours
+    by repeating the last value and then divides by the mean of all 8,760. Run
+    after slicing it would take the mean over 168 real hours and 8,592 copies of
+    the 168th, which is not the year's mean and would scale the hydro fleet by an
+    arbitrary factor that changes with the chosen week. Normalising here, on the
+    real year, gives the shape upstream intends; `astr_v2.to_v2` then keeps the
+    sliced arrays out of `hydro_shape`'s way.
+    """
+    from good import migrate
+
     g = deepcopy(nlg)
 
     def _one(arr):
@@ -56,15 +71,22 @@ def _transform_nlg_profiles(nlg: dict, horizon: str, week: dict | None = None) -
         start = int((week or C.SEASONAL_WEEKS[0])["start_hour"])
         return C.slice_hours(arr, start, C.NUM_HOURS_WEEK).tolist()
 
+    n_hydro = 0
     for node in g.get("nodes") or []:
         profiles = node.get("profiles") or {}
         for key, val in list(profiles.items()):
-            if isinstance(val, (list, np.ndarray)):
-                profiles[key] = _one(val)
+            if not isinstance(val, (list, np.ndarray)):
+                continue
+            if str(key).endswith(":hydro"):
+                val = migrate.hydro_shape(val).tolist()
+                n_hydro += 1
+            profiles[key] = _one(val)
         for asset in (node.get("assets") or {}).values():
             prof = asset.get("profile")
             if isinstance(prof, (list, np.ndarray)):
                 asset["profile"] = _one(prof)
+    if n_hydro:
+        print(f"  hydro profiles normalized over the full year before slicing: {n_hydro:,}")
     return g
 
 
@@ -113,107 +135,101 @@ def _graph_fingerprint() -> str:
 
 
 def _solver_kw(horizon: str, scenario: str, log_path: Path | None = None, crossover: int = 0) -> dict:
-    import ev_charging_project.config as config
+    """Gurobi parameters for one solve, as linopy wants them.
 
-    kw = deepcopy(config.SOLVER_KW)
-    opts = kw.setdefault("solver", {}).setdefault("options", {})
-    # Dual simplex (Method=1) stalled on the 672 h nested LP (~8.6M rows)
-    # with dual infeasibility after 1 h. Barrier is the default for this LP.
-    opts["Method"] = 2
-    opts["Crossover"] = crossover
-    opts["BarHomogeneous"] = 1
-    opts["Presolve"] = 2
-    opts["NodefileStart"] = 0.5
-    opts.setdefault("NodefileDir", os.path.abspath("./gurobi_nodefiles"))
-    opts["NumericFocus"] = 1
-    # ScaleFlag=1 (standard), NOT 2 (aggressive). This single parameter is what
-    # made the 672 h horizon solvable. Aggressive scaling had been set on the
-    # reasoning that a nine-order coefficient spread needs it; it was instead
-    # *creating* the instability -- barrier stalling on primal residual,
-    # crossover grinding 4.1M iterations, dual infeasibility oscillating over
-    # two orders of magnitude. Under ScaleFlag=2 the four-week S0 failed to
-    # certify in 14,400 s on three separate attempts; under ScaleFlag=1 it
-    # certifies in ~1,150 s, and S1 and S3 certify too. The certified optimum
-    # also sits 2% BELOW where the ScaleFlag=2 runs had crawled to, so those
-    # runs were never close to converged.
-    opts["ScaleFlag"] = 1
-    # Explicit convergence tolerances: previously left at Gurobi defaults, so
-    # a badly-scaled model (capacities span ~1e5-1e10 W; costs ~1e-13-1e3
-    # across shortfall/wastage/operating) could report "optimal" without
-    # actually certifying a tight solution. Loosen from Gurobi's 1e-8/1e-6
-    # defaults slightly given the coefficient spread, but keep them explicit
-    # so a failure to meet them is visible rather than silently accepted.
-    # ASTR_BARCONVTOL loosens this for a two-stage sizing pass. On the 672 h
-    # model the barrier stalls at a relative gap of ~3e-4 and reports
-    # "Sub-optimal termination": primal residual and complementarity both
-    # plateau for the last ~15 iterations rather than falling, so more time
-    # does not help. At 1e-7 that stall is a failure and Gurobi hands the
-    # point to crossover, which then cannot finish (2.27M iterations, 4 h, no
-    # convergence). At a tolerance the model can actually meet, barrier
-    # terminates optimal in ~6 min and the build it reports is good to a few
-    # parts in ten thousand -- ample for deciding capacity, which is all
-    # stage 1 is asked for. Stage 2 keeps the tight default for dispatch.
-    opts["BarConvTol"] = float(os.environ.get("ASTR_BARCONVTOL", 1e-7))
-    # Loosened from 1e-6 after S1 and S3 both hit the 2 h limit inside
-    # crossover on the June week. Most of that time went into grinding from an
-    # already near-optimal point -- S1's objective moved 0.1% over its final
-    # 40 minutes while dual infeasibility oscillated rather than fell. Dual
-    # precision is not something this model consumes (duals are disabled to
-    # keep memory down), so trading a decimal place of it for termination is
-    # the right side of the trade.
-    opts["OptimalityTol"] = 1e-5
-    opts["FeasibilityTol"] = 1e-6
-    # S3 scales CA transmission and BA interfaces by 10x, which widens an
-    # already wide coefficient range; its crossover reported status "Numeric"
-    # rather than "Sub-Optimal", i.e. numerical trouble and not merely a
-    # shortage of time. Raise the numerical effort for that scenario.
-    if scenario == "S3":
-        opts["NumericFocus"] = 2
+    Most of the v1 tuning here was working around the $/J formulation, and does
+    not carry over unexamined. That model's objective coefficients spanned ~13
+    orders of magnitude (7e-10 to 1e3) with right-hand sides to 9e13, and the
+    parameters below existed to keep Gurobi stable inside that range:
+
+      * ``ScaleFlag=1`` was the single change that made the 672 h horizon
+        solvable at all -- three failures at the 14,400 s limit under the
+        aggressive ``ScaleFlag=2``, against ~1,150 s to certify under standard
+        scaling, with the certified optimum 2% BELOW where the failed runs had
+        crawled to. In MW/$/MWh the spread it was correcting is gone, so the
+        default here is Gurobi's own choice (-1) and ScaleFlag is something to
+        sweep, not something to pin.
+      * ``OptimalityTol=1e-5`` and ``NumericFocus`` were loosened for the same
+        reason: S1 and S3 hit the 2 h limit inside crossover, grinding from an
+        already near-optimal point while dual infeasibility oscillated rather
+        than fell. Left at Gurobi defaults now.
+      * ``BarConvTol`` is kept overridable for the two-stage sizing pass, where
+        stage 1 only needs capacity good to a few parts in ten thousand. Note
+        loosening it made things WORSE once: at 1e-4 the barrier quit at
+        iteration 87 with a primal residual of 6.70e6, Gurobi discarded the
+        point, and crossover restarted from scratch. BarConvTol measures
+        complementarity, not primal feasibility.
+
+    Re-run 10_09_solver_param_sweep.py on the four-week horizon before pinning
+    any of these again -- and sweep on the horizon that matters, since the
+    concurrent method that won by 2.89x at one week lost 55% at four.
+    """
+    opts = {
+        "OutputFlag": 1,
+        # Barrier. Dual simplex (Method=1) stalled on the 672 h nested LP
+        # (~8.6M rows) with dual infeasibility after an hour, and concurrent
+        # (-1/3/5) splits threads across methods, which cost 55% at this size.
+        "Method": 2,
+        "Crossover": crossover,
+        "BarHomogeneous": 1,
+        "Presolve": 2,
+        "NodefileStart": 0.5,
+        "NodefileDir": os.path.abspath("./gurobi_nodefiles"),
+        "BarConvTol": float(os.environ.get("ASTR_BARCONVTOL", 1e-8)),
+    }
+
     if log_path is not None:
         opts["LogFile"] = str(log_path)
-    if horizon == "8760":
-        opts["TimeLimit"] = 24 * 3600
-    else:
-        opts["TimeLimit"] = float(os.environ.get("ASTR_TIME_LIMIT_S", 4 * 3600))
+
+    opts["TimeLimit"] = (24 * 3600 if horizon == "8760"
+                         else float(os.environ.get("ASTR_TIME_LIMIT_S", 4 * 3600)))
+
     # ASTR_GUROBI_PARAMS is a JSON object of raw Gurobi parameters applied last,
-    # so it overrides anything set above. It exists because this LP's cost is not
-    # where the defaults assume: barrier iterations are cheap here (1.23 s each,
-    # Factor Ops 5.8e8) while the crossover clean-up ran ~4.1M simplex
-    # iterations, and Gurobi's simplex is single-threaded -- so the phase that
-    # consumed 3.5 of 4 hours used one of 14 cores. Parameters worth sweeping:
-    #   Method=3/5   concurrent LP; runs barrier and both simplices in parallel
+    # so it overrides anything set above. Parameters worth sweeping on this LP:
+    #   Method=3/5   concurrent; only above ~8 spare cores, see the note above
     #   Sifting=2    for columns >> rows (presolved 1.20M x 4.38M, a 3.64x ratio)
-    #   Aggregate=1  re-enable presolve aggregation, currently switched off
-    #   ScaleFlag=3  geometric-mean scaling, for the RHS range [4e4, 9e13]
+    #   Aggregate=1  re-enable presolve aggregation
+    #   ScaleFlag    0-3; now unpinned, so worth re-measuring in MW units
     extra = os.environ.get("ASTR_GUROBI_PARAMS")
     if extra:
         overrides = json.loads(extra)
         opts.update(overrides)
         print(f"  Gurobi param overrides: {overrides}")
-    return kw
+
+    return {"solver": "gurobi", "tee": True, "options": {"io_api": "direct", **opts}}
 
 
-def _generation_totals(solution_graph) -> pd.DataFrame:
+def _generation_totals(solution_graph, graph=None, time_step: float = 1.0) -> pd.DataFrame:
+    """Per-asset generation in MWh, with each asset's own emission factor.
+
+    Production comes back from the solution in MW, so energy is the hourly sum
+    times the step length. ``fuel`` and ``co2`` are input attributes and are NOT
+    echoed into the v2 solution graph, so *graph* -- the built graph the solve
+    ran on -- has to be passed to recover them.
+    """
     rows = []
     for node_name, node_data in solution_graph._node.items():
+        source_assets = ((graph._node.get(node_name) or {}).get("assets") or {}) if graph is not None else {}
         for asset_name, asset_data in node_data.get("assets", {}).items():
             prod = asset_data.get("production", asset_data.get("net", None))
-            fuel = asset_data.get("fuel", None)
+            source = source_assets.get(asset_name) or {}
+            fuel = source.get("fuel", asset_data.get("fuel"))
             if prod is None or fuel is None:
                 continue
             arr = np.asarray(prod, dtype=float).flatten()
-            energy_j = float(arr.sum() * 3600.0)
             rows.append(
                 {
                     "node": node_name,
                     "asset": asset_name,
                     "fuel": str(fuel).lower(),
-                    "energy_J": energy_j,
-                    "mean_W": float(arr.mean()) if arr.size else 0.0,
+                    "energy_MWh": float(arr.sum() * time_step),
+                    "mean_MW": float(arr.mean()) if arr.size else 0.0,
                     # Per-generator emission factor carried on the asset itself,
-                    # in kg CO2 per J of electricity. See _emissions_kg.
-                    "co2_kg_per_J": pd.to_numeric(asset_data.get("co2"), errors="coerce"),
-                    "hourly_W": arr,
+                    # in kg CO2 per MWh of electricity. See _emissions_kg.
+                    "co2_kg_per_MWh": pd.to_numeric(
+                        source.get("co2", asset_data.get("co2")), errors="coerce"
+                    ),
+                    "hourly_MW": arr,
                 }
             )
     return pd.DataFrame(rows)
@@ -222,20 +238,21 @@ def _generation_totals(solution_graph) -> pd.DataFrame:
 def _emissions_kg(gen_df: pd.DataFrame) -> float:
     """CO2 in kg, using each generator's OWN emission factor where it has one.
 
-    WEC.json carries a per-asset ``co2`` in kg per J of electricity, derived from
-    eGRID. It should be preferred over a fuel-level constant, because the
-    fuel-level constants this function previously used were far too high and
-    inflated every emission result in the study:
+    WEC.json carries a per-asset ``co2`` in kg per unit of electricity, derived
+    from eGRID; ``good.migrate.from_v1`` rescales it from kg/J to kg/MWh. It
+    should be preferred over a fuel-level constant, because the fuel-level
+    constants this function previously used were far too high and inflated every
+    emission result in the study (kg/MWh):
 
         fuel          hardcoded      asset median   ratio
-        natural gas   2.00e-7        1.04e-7        1.9x
-        coal          3.36e-7        6.93e-8        4.8x
-        oil           2.70e-7        3.25e-8        8.3x
-        biomass       9.30e-8        4.13e-9       22.5x
+        natural gas     720.0          374.4        1.9x
+        coal           1209.6          249.5        4.8x
+        oil             972.0          117.0        8.3x
+        biomass         334.8           14.9       22.5x
 
-    The hardcoded gas figure implies 720 g/kWh, i.e. a heat rate of ~4 and 25%
+    The hardcoded gas figure of 720 kg/MWh implies a heat rate of ~4 and 25%
     thermal efficiency, below even an old steam turbine. The per-asset values
-    give a capacity-weighted 376 g/kWh for gas, which is what a combined-cycle
+    give a capacity-weighted 376 kg/MWh for gas, which is what a combined-cycle
     fleet actually emits and what CAISO reports on the margin. Measured effect:
     the consequential EV emission factor falls from 771 g/kWh to roughly the
     mid-300s, and every absolute tonnage roughly halves.
@@ -244,10 +261,10 @@ def _emissions_kg(gen_df: pd.DataFrame) -> float:
     silently:
 
     * **Coal is a single shared default.** Every large coal unit carries the
-      identical 6.93e-08 (250 g/kWh), where real coal is 900-1,000 g/kWh. It is
-      a fuel-level placeholder, not per-unit data. `ASTR_COAL_CO2` overrides it;
-      unset, the published value is used unchanged so results stay traceable to
-      the input.
+      identical 249.5 kg/MWh, where real coal is 900-1,000 kg/MWh. It is a
+      fuel-level placeholder, not per-unit data. `ASTR_COAL_CO2` overrides it --
+      **in kg/MWh now, not kg/J**; unset, the published value is used unchanged
+      so results stay traceable to the input.
     * **43 fossil producers carry no factor at all.** Those fall back to the
       capacity-weighted median of their own fuel from the same file, not to the
       old constants, so the fallback is internally consistent.
@@ -259,37 +276,47 @@ def _emissions_kg(gen_df: pd.DataFrame) -> float:
         return 0.0
 
     # Fallback per fuel, taken from the file itself rather than from a constant.
-    have = gen_df[pd.to_numeric(gen_df.get("co2_kg_per_J"), errors="coerce").fillna(0.0) > 0]
+    have = gen_df[pd.to_numeric(gen_df.get("co2_kg_per_MWh"), errors="coerce").fillna(0.0) > 0]
     fuel_median = (
-        have.groupby("fuel")["co2_kg_per_J"].median().to_dict() if not have.empty else {}
+        have.groupby("fuel")["co2_kg_per_MWh"].median().to_dict() if not have.empty else {}
     )
     coal_override = os.environ.get("ASTR_COAL_CO2")
 
     co2 = 0.0
-    missing_j = 0.0
+    missing_mwh = 0.0
     for _, r in gen_df.iterrows():
         f = str(r.get("fuel", "")).lower()
-        ef = pd.to_numeric(r.get("co2_kg_per_J"), errors="coerce")
+        ef = pd.to_numeric(r.get("co2_kg_per_MWh"), errors="coerce")
         if not (isinstance(ef, float) and ef > 0):
             ef = fuel_median.get(f, 0.0)
             if ef > 0:
-                missing_j += float(r["energy_J"])
+                missing_mwh += float(r["energy_MWh"])
         if f == "coal" and coal_override:
             ef = float(coal_override)
-        co2 += float(r["energy_J"]) * float(ef or 0.0)
-    if missing_j > 0:
-        print(f"  note: {missing_j / 3.6e12:,.1f} GWh from generators with no published "
+        co2 += float(r["energy_MWh"]) * float(ef or 0.0)
+    if missing_mwh > 0:
+        print(f"  note: {missing_mwh / 1e3:,.1f} GWh from generators with no published "
               f"co2 factor; used their fuel's median from the same file")
     return float(co2)
 
 
-def _line_records(solution_graph) -> pd.DataFrame:
+def _line_records(solution_graph, graph=None) -> pd.DataFrame:
+    """Per-line flow in MW and how many hours each line was at its rating.
+
+    v2 names the flow variable ``flow`` (v1 called it ``transmission``) and does
+    not echo ``installed_capacity`` into the solution, so the rating comes from
+    *graph* -- the built graph the solve ran on. Without it every line looks
+    unconstrained and ``binding_hours`` would be zero everywhere, which is the
+    headline congestion diagnostic.
+    """
     rows = []
     for src, adj in solution_graph._adj.items():
         for tgt, edge in adj.items():
+            source_lines = ((graph._adj.get(src) or {}).get(tgt) or {}).get("lines") or {} if graph is not None else {}
             for handle, line in (edge.get("lines") or {}).items():
-                flow = np.asarray(line.get("transmission", []), dtype=float).reshape(-1)
-                cap = float(line.get("installed_capacity") or 0.0)
+                flow = np.asarray(line.get("flow", line.get("transmission", [])), dtype=float).reshape(-1)
+                cap = float((source_lines.get(handle) or {}).get("installed_capacity")
+                            or line.get("installed_capacity") or 0.0)
                 if flow.size == 0:
                     continue
                 binding = (cap > 0) & (flow >= 0.99 * cap)
@@ -298,9 +325,9 @@ def _line_records(solution_graph) -> pd.DataFrame:
                         "source": src,
                         "target": tgt,
                         "line": handle,
-                        "capacity_W": cap,
-                        "mean_flow_W": float(flow.mean()),
-                        "peak_flow_W": float(flow.max()),
+                        "capacity_MW": cap,
+                        "mean_flow_MW": float(flow.mean()),
+                        "peak_flow_MW": float(flow.max()),
                         "binding_hours": int(binding.sum()),
                         "n_hours": int(flow.size),
                     }
@@ -308,7 +335,7 @@ def _line_records(solution_graph) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _shortfall_by_node(solution_graph) -> pd.DataFrame:
+def _shortfall_by_node(solution_graph, time_step: float = 1.0) -> pd.DataFrame:
     """Per-node shortfall shape, for sizing storage against the actual deficit.
 
     A battery is bounded by two different things and the totals hide both.
@@ -323,8 +350,9 @@ def _shortfall_by_node(solution_graph) -> pd.DataFrame:
     sized at half the EV peak, which came to roughly a tenth of the deficit,
     and only 11 of 786 batteries discharged at all.
 
-    Columns are energy in J per hour as Region.solution() reports them, so
-    peak power is the hourly maximum divided by the step length.
+    v2's Region.solution() reports shortfall in MW per step, where v1 reported
+    energy in J per step, so peak power is now the hourly maximum directly and
+    energy is the sum times the step length.
     """
     rows = []
     for nid, node in solution_graph._node.items():
@@ -344,18 +372,93 @@ def _shortfall_by_node(solution_graph) -> pd.DataFrame:
                 cur_len = cur_e = 0
         rows.append({
             "node": nid,
-            "shortfall_J": float(sf.sum()),
-            "shortfall_GWh": float(sf.sum()) / 3.6e12,
-            "peak_hour_J": float(sf.max()),
-            "peak_MW": float(sf.max()) / 3600.0 / 1e6,
+            "shortfall_MWh": float(sf.sum()) * time_step,
+            "shortfall_GWh": float(sf.sum()) * time_step / 1e3,
+            "peak_MW": float(sf.max()),
             "hours_short": int(short.sum()),
             "longest_run_h": int(best_len),
-            "longest_run_MWh": float(best_e) / 3.6e9,
+            "longest_run_MWh": float(best_e) * time_step,
         })
-    return pd.DataFrame(rows).sort_values("shortfall_J", ascending=False)
+    if not rows:
+        return pd.DataFrame(columns=["node", "shortfall_MWh"])
+    return pd.DataFrame(rows).sort_values("shortfall_MWh", ascending=False)
 
 
-def _wastage_by_node(solution_graph) -> pd.DataFrame:
+def _vre_curtailment(solution_graph, graph, time_step: float = 1.0):
+    """Per-node hourly VRE curtailment in MW: what the fleet could have made, minus what it did.
+
+    This has to be measured, not read off the node, because GOOD 2.x moved where
+    curtailment lives. In v1 solar and wind were must-take ``Load`` assets, so
+    surplus VRE had nowhere to go and appeared as node ``wastage``: energy pushed
+    into the balance and dumped. ``migrate.from_v1`` reclassifies them as
+    curtailable ``Producer`` assets (2,227 of them, ~55 GW), so the optimiser
+    simply does not produce the surplus in the first place. Node wastage then
+    goes to zero -- it did, exactly zero across all 962 nodes on the first v2
+    week -- and reading it alone would report no curtailment at all in a system
+    that is still spilling the same physical energy.
+
+    Availability follows producer.py: ``capacity_factor * profile * installed_capacity``.
+    Only assets that can actually be turned down are counted, so a must-run unit
+    held at its profile contributes nothing here by construction.
+
+    Two exclusions matter, and leaving either out inflates the number badly:
+
+    * **Only solar and wind.** These are the assets `_vre` reclassified, and the
+      population is exactly right: 2,188 units, 55,169 MW.
+    * **Nothing with an `energy_budget_window`.** `from_v1` gives every hydro unit
+      a 24-hour energy budget, so hydro routinely produces below its hourly
+      availability -- it is holding water for later, not spilling it. Counting it
+      swept in 1,360 units and 50,763 MW of hydro and reported 1,932 GWh of
+      curtailment on a PG&E week where the real VRE figure is a fraction of that.
+    """
+    per_node: dict[str, np.ndarray] = {}
+
+    for nid, node in solution_graph._node.items():
+        source_assets = ((graph._node.get(nid) or {}).get("assets") or {})
+
+        for aname, asset in (node.get("assets") or {}).items():
+            source = source_assets.get(aname)
+
+            if not source or source.get("_class") != "Producer":
+                continue
+
+            if not source.get("dispatchable") or source.get("energy_budget_window"):
+                continue
+
+            if str(source.get("type", "")).lower() not in ("solar", "wind"):
+                continue
+
+            profile = source.get("profile")
+
+            if profile is None:
+                continue
+
+            prod = np.asarray(asset.get("production", []), dtype=float).reshape(-1)
+
+            if prod.size == 0:
+                continue
+
+            avail = (np.asarray(profile, dtype=float).reshape(-1)[:prod.size]
+                     * float(source.get("capacity_factor") or 1.0)
+                     * float(source.get("installed_capacity") or 0.0))
+
+            if avail.size != prod.size:
+                continue
+
+            spill = np.maximum(avail - prod, 0.0)
+
+            if spill.sum() <= 0:
+                continue
+
+            if nid in per_node:
+                per_node[nid] = per_node[nid] + spill
+            else:
+                per_node[nid] = spill
+
+    return per_node
+
+
+def _wastage_by_node(solution_graph, time_step: float = 1.0, curtailment: dict | None = None) -> pd.DataFrame:
     """Per-node curtailment shape, for sizing storage against spilled energy.
 
     The mirror of `_shortfall_by_node`, and needed because the batteries that
@@ -372,10 +475,25 @@ def _wastage_by_node(solution_graph) -> pd.DataFrame:
     there may be no discharge window either. `longest_run_h` is therefore read
     the opposite way here: a LONG curtailment run is bad for storage, because it
     means the corridor is never free.
+
+    Spill is the sum of two things under GOOD 2.x: node ``wastage`` (surplus
+    dumped out of the energy balance, which is now usually zero) and VRE
+    curtailment (production held below availability). ``curtailment`` carries the
+    second from `_vre_curtailment`. Adding them keeps this file measuring the same
+    physical quantity it did in v1, which is what 08_14 sizes batteries against.
     """
+    curtailment = curtailment or {}
+    nodes = set(solution_graph._node) | set(curtailment)
     rows = []
-    for nid, node in solution_graph._node.items():
+    for nid in nodes:
+        node = solution_graph._node.get(nid) or {}
         ws = np.asarray(node.get("wastage") or [], dtype=float)
+        cu = np.asarray(curtailment.get(nid, []), dtype=float)
+        if ws.size and cu.size:
+            n = min(ws.size, cu.size)
+            ws = ws[:n] + cu[:n]
+        elif cu.size:
+            ws = cu
         if not ws.size or ws.sum() <= 0:
             continue
         spill = ws > 0
@@ -390,97 +508,137 @@ def _wastage_by_node(solution_graph) -> pd.DataFrame:
                 cur_len = cur_e = 0
         rows.append({
             "node": nid,
-            "wastage_J": float(ws.sum()),
-            "wastage_GWh": float(ws.sum()) / 3.6e12,
-            "peak_hour_J": float(ws.max()),
-            "peak_MW": float(ws.max()) / 3600.0 / 1e6,
-            "mean_MW": float(ws.mean()) / 3600.0 / 1e6,
+            "wastage_MWh": float(ws.sum()) * time_step,
+            "wastage_GWh": float(ws.sum()) * time_step / 1e3,
+            "peak_MW": float(ws.max()),
+            "mean_MW": float(ws.mean()),
             "hours_spilling": int(spill.sum()),
             "hours_free": int((~spill).sum()),
             "longest_run_h": int(best_len),
-            "longest_run_MWh": float(best_e) / 3.6e9,
+            "longest_run_MWh": float(best_e) * time_step,
         })
-    return pd.DataFrame(rows).sort_values("wastage_J", ascending=False)
+    if not rows:
+        return pd.DataFrame(columns=["node", "wastage_MWh"])
+    return pd.DataFrame(rows).sort_values("wastage_MWh", ascending=False)
 
 
-def _shortfall_wastage_totals(solution_graph) -> dict:
-    """Sum node-level shortfall/wastage energy (J) across the whole graph.
+def _shortfall_wastage_totals(solution_graph, time_step: float = 1.0,
+                              curtailment: dict | None = None) -> dict:
+    """Sum node-level shortfall and spill energy (MWh) across the whole graph.
 
     Region.solution() puts 'shortfall'/'wastage' directly on each node dict
-    (not under 'assets') as a per-hour list in Joules (region.py's energy
-    balance and objective sum these with no time_step multiplication, i.e.
-    they're already per-step energy, not power).
+    (not under 'assets') as a per-hour list. In v2 these are MW, so energy is
+    the sum times the step length; v1 reported per-step Joules and needed no
+    multiplication.
+
+    ``wastage_GWh`` is reported as total spill -- dumped surplus plus VRE
+    curtailment -- and the two components are broken out beside it. They have to
+    be added to stay comparable with the v1 results, where must-take solar and
+    wind made all spill show up as dumped surplus. See `_vre_curtailment`.
     """
-    shortfall_j = 0.0
-    wastage_j = 0.0
+    curtailment = curtailment or {}
+    shortfall_mwh = 0.0
+    dumped_mwh = 0.0
+    curtailed_mwh = 0.0
     top_shortfall = []
     top_wastage = []
-    for nid, node in solution_graph._node.items():
+    for nid in set(solution_graph._node) | set(curtailment):
+        node = solution_graph._node.get(nid) or {}
         sf = np.asarray(node.get("shortfall") or [], dtype=float)
         ws = np.asarray(node.get("wastage") or [], dtype=float)
+        cu = np.asarray(curtailment.get(nid, []), dtype=float)
         if sf.size:
-            s = float(sf.sum())
-            shortfall_j += s
+            s = float(sf.sum()) * time_step
+            shortfall_mwh += s
             if s > 0:
                 top_shortfall.append((nid, s))
-        if ws.size:
-            w = float(ws.sum())
-            wastage_j += w
-            if w > 0:
-                top_wastage.append((nid, w))
+        dumped = float(ws.sum()) * time_step if ws.size else 0.0
+        curtailed = float(cu.sum()) * time_step if cu.size else 0.0
+        dumped_mwh += dumped
+        curtailed_mwh += curtailed
+        if dumped + curtailed > 0:
+            top_wastage.append((nid, dumped + curtailed))
     top_shortfall.sort(key=lambda x: x[1], reverse=True)
     top_wastage.sort(key=lambda x: x[1], reverse=True)
+    wastage_mwh = dumped_mwh + curtailed_mwh
     return {
-        "shortfall_J": shortfall_j,
-        "wastage_J": wastage_j,
-        "shortfall_GWh": shortfall_j / 3.6e12,
-        "wastage_GWh": wastage_j / 3.6e12,
+        "shortfall_MWh": shortfall_mwh,
+        "wastage_MWh": wastage_mwh,
+        "shortfall_GWh": shortfall_mwh / 1e3,
+        "wastage_GWh": wastage_mwh / 1e3,
+        "dumped_surplus_GWh": dumped_mwh / 1e3,
+        "vre_curtailment_GWh": curtailed_mwh / 1e3,
         "top_shortfall_nodes": top_shortfall[:10],
         "top_wastage_nodes": top_wastage[:10],
         "n_wastage_nodes": len(top_wastage),
     }
 
 
-def _bess_records(solution_graph) -> pd.DataFrame:
+def _bess_records(solution_graph, graph=None, time_step: float = 1.0) -> pd.DataFrame:
+    """Per-battery planned power, built power and energy discharged, in MW/MWh.
+
+    v2 reports storage as separate ``charge``/``discharge`` series plus a ``net``,
+    where v1 folded them into one signed ``production``, and names the built
+    capacity ``new_capacity`` rather than ``capex``. Reading ``discharge``
+    directly is more accurate than the old ``max(production, 0)``: that clipped
+    the net series, so any hour with simultaneous charge and discharge
+    understated the throughput that sets the cycle count.
+    """
     rows = []
     for nid, node in solution_graph._node.items():
+        source_assets = ((graph._node.get(nid) or {}).get("assets") or {}) if graph is not None else {}
         for aname, asset in (node.get("assets") or {}).items():
             if not str(aname).startswith("bess"):
                 continue
-            prod = np.asarray(asset.get("production", [0.0]), dtype=float).reshape(-1)
-            capex = asset.get("capex", [0.0])
-            built = float(np.asarray(capex, dtype=float).reshape(-1)[0]) if capex is not None else 0.0
+            discharge = asset.get("discharge")
+            if discharge is None:
+                net = np.asarray(asset.get("net", asset.get("production", [0.0])), dtype=float).reshape(-1)
+                discharge = np.maximum(net, 0.0)
+            discharge = np.asarray(discharge, dtype=float).reshape(-1)
+            charge = np.asarray(asset.get("charge", [0.0]), dtype=float).reshape(-1)
+            new = asset.get("new_capacity", asset.get("capex", [0.0]))
+            built = float(np.asarray(new, dtype=float).reshape(-1)[0]) if new is not None else 0.0
+            source = source_assets.get(aname) or {}
             rows.append(
                 {
                     "node": nid,
-                    "planned_W": float(asset.get("capex_capacity") or 0.0),
-                    "built_W": built,
-                    "discharge_Wh": float(np.maximum(prod, 0.0).sum()),
+                    "planned_MW": float(source.get("capex_capacity") or asset.get("capex_capacity") or 0.0),
+                    "installed_MW": float(source.get("installed_capacity") or 0.0),
+                    "built_MW": built,
+                    "discharge_MWh": float(discharge.sum() * time_step),
+                    "charge_MWh": float(charge.sum() * time_step),
                 }
             )
     return pd.DataFrame(rows)
 
 
 def _solve_nlg(nlg, policies, network_kw, solver_kw, label: str):
-    import good
-    import pyomo.environ as pyomo
+    """Convert to v2 units, build, solve, and return (solution_graph, graph, objective).
 
-    graph = good.graph.graph_from_nlg(nlg)
+    The built graph is returned alongside the solution because v2's solution
+    graph carries results only: ``fuel``, ``co2`` and ``installed_capacity`` stay
+    on the input, and the post-processing needs all three.
+    """
+    import good
+
+    graph = astr_v2.to_v2(nlg, transmission_efficiency=astr_v2.TRANSMISSION_EFFICIENCY)
     print(f"  Building network [{label}] nodes={graph.number_of_nodes()} edges={graph.number_of_edges()}")
     t0 = time.time()
-    network = good.optimization.network.Network(**network_kw).from_graph(graph, policies)
+    network = good.Network(**network_kw).from_graph(graph, policies)
     network.build()
     print(f"    built in {time.time()-t0:.1f}s; steps={network.steps}")
     print(f"  Solving [{label}] ...")
     t0 = time.time()
     network.solve(**solver_kw)
     print(f"    solved in {time.time()-t0:.1f}s")
+
     obj = None
     try:
-        obj = float(pyomo.value(network.model.objective))
+        obj = float(network.objective_value)
     except Exception:
         obj = None
-    return network.solution, obj
+
+    return network.solution_graph(), graph, obj
 
 
 def _disable_solar_wind_capex(nlg: dict) -> dict:
@@ -570,10 +728,10 @@ def _disable_capex_nlg(nlg: dict, prescribe_bess: bool = True) -> dict:
 
 
 def _extract_capex_decisions(solution, nlg: dict) -> dict:
-    """TOTAL built capacity for every extensible asset, keyed (region, handle).
+    """TOTAL built capacity in MW for every extensible asset, keyed (region, handle).
 
-    Deliberately broader than ``ev_charging_project.utils.extract_capex_expansion``,
-    which only matches handles beginning ``optional_``. The substation batteries
+    Deliberately broader than upstream's ``migrate``-era capex helper, which only
+    matched handles beginning ``optional_``. The substation batteries
     scenario S2 adds are named ``bess_<hub>`` and that filter misses them
     entirely, so a two-stage run built on it would silently re-decide every
     battery in each stage-2 week instead of holding stage 1's build fixed --
@@ -590,9 +748,14 @@ def _extract_capex_decisions(solution, nlg: dict) -> dict:
     read as S1 building less storage than S0 despite serving strictly more
     load. Absolute totals mean the same number regardless of which baseline
     produced them.
+
+    Units: the graph in *nlg* is still in v1 watts, the solution is in v2 MW, so
+    the installed base is converted before the two are added. The file this
+    feeds is therefore in MW throughout, and ``_fix_capex_nlg`` converts back on
+    the way in.
     """
     base_ic = {
-        (n["id"], h): float(a.get("installed_capacity") or 0.0)
+        (n["id"], h): float(a.get("installed_capacity") or 0.0) / astr_v2.W_PER_MW
         for n in (nlg.get("nodes") or [])
         for h, a in (n.get("assets") or {}).items()
         if a.get("extensible")
@@ -602,12 +765,12 @@ def _extract_capex_decisions(solution, nlg: dict) -> dict:
         for handle, asset in (node.get("assets") or {}).items():
             if (region, handle) not in base_ic:
                 continue
-            v = asset.get("capex", [0])
+            v = asset.get("new_capacity", asset.get("capex", [0]))
             if isinstance(v, (list, tuple)):
-                w = float(v[0]) if v else 0.0
+                mw = float(v[0]) if v else 0.0
             else:
-                w = float(v)
-            out[(region, handle)] = max(0.0, base_ic[(region, handle)] + w)
+                mw = float(v)
+            out[(region, handle)] = max(0.0, base_ic[(region, handle)] + mw)
     return out
 
 
@@ -644,10 +807,13 @@ def _fix_capex_nlg(nlg: dict, decisions: dict) -> dict:
     their installed base. Leaving even a few assets open would let each seasonal
     week buy its own capacity, so the four weeks would no longer describe one
     consistent system and their sum would not be an annual result.
+
+    ``decisions`` is in MW (see ``_extract_capex_decisions``) while this graph is
+    still in v1 watts, so the capacities are converted on the way in.
     """
     g = deepcopy(nlg)
     n_built = n_frozen = 0
-    built_w = 0.0
+    built_mw = 0.0
     for node in g.get("nodes") or []:
         for handle, asset in (node.get("assets") or {}).items():
             if not asset.get("extensible"):
@@ -656,12 +822,12 @@ def _fix_capex_nlg(nlg: dict, decisions: dict) -> dict:
             asset["capex_capacity"] = 0.0
             asset["extensible"] = False
             if built:
-                asset["installed_capacity"] = float(built)
-                built_w += float(built)
+                asset["installed_capacity"] = float(built) * astr_v2.W_PER_MW
+                built_mw += float(built)
                 n_built += 1
             else:
                 n_frozen += 1
-    print(f"  CAPEX fixed from stage 1: {n_built} assets held at {built_w / 1e6:,.0f} MW, "
+    print(f"  CAPEX fixed from stage 1: {n_built} assets held at {built_mw:,.0f} MW, "
           f"{n_frozen} frozen at base")
     return g
 
@@ -691,20 +857,26 @@ def _congestion_ranked_bess_hubs(line_flows_csv: Path, network_json: Path, frac:
 
 
 def _apply_capex_floor_nlg(nlg: dict, expansions: dict) -> dict:
-    """Lock later scenarios to at least S0 renewable/storage expansion (nlg dict)."""
+    """Lock later scenarios to at least S0 renewable/storage expansion (nlg dict).
+
+    ``expansions`` holds the MW *increment* each asset built in S0, as
+    ``astr_v2.extract_capex_expansion`` reports it; this graph is still in v1
+    watts, so each increment is converted before being folded in.
+    """
     g = deepcopy(nlg)
     by_id = {n["id"]: n for n in g.get("nodes") or []}
-    for (region, handle), expansion_w in expansions.items():
+    for (region, handle), expansion_mw in expansions.items():
         node = by_id.get(region)
         if not node:
             continue
         asset = (node.get("assets") or {}).get(handle)
         if not asset:
             continue
+        expansion_w = float(expansion_mw) * astr_v2.W_PER_MW
         orig_ic = float(asset.get("installed_capacity") or 0.0)
         orig_cap = float(asset.get("capex_capacity") or 0.0)
-        asset["installed_capacity"] = orig_ic + float(expansion_w)
-        asset["capex_capacity"] = max(0.0, orig_cap - float(expansion_w))
+        asset["installed_capacity"] = orig_ic + expansion_w
+        asset["capex_capacity"] = max(0.0, orig_cap - expansion_w)
         if asset["capex_capacity"] == 0:
             asset["extensible"] = False
     return g
@@ -712,9 +884,9 @@ def _apply_capex_floor_nlg(nlg: dict, expansions: dict) -> dict:
 
 def _compact_run_rows(horizon: str, tag: str, scen: str, gen: pd.DataFrame, lines: pd.DataFrame, co2: float, obj):
     fuel = (
-        gen.groupby("fuel", as_index=False)["energy_J"].sum()
+        gen.groupby("fuel", as_index=False)["energy_MWh"].sum()
         if not gen.empty
-        else pd.DataFrame(columns=["fuel", "energy_J"])
+        else pd.DataFrame(columns=["fuel", "energy_MWh"])
     )
     binding = int(lines["binding_hours"].sum()) if not lines.empty else 0
     row = {
@@ -728,7 +900,7 @@ def _compact_run_rows(horizon: str, tag: str, scen: str, gen: pd.DataFrame, line
         "n_lines": int(len(lines)),
     }
     for _, r in fuel.iterrows():
-        row[f"energy_J_{r['fuel']}"] = r["energy_J"]
+        row[f"energy_MWh_{r['fuel']}"] = r["energy_MWh"]
     return row
 
 
@@ -748,10 +920,10 @@ def run_horizon(
     no_capex: bool = False,
     bess_csv: Path | None = None,
 ) -> pd.DataFrame:
-    import ev_charging_project.config as config
-    from ev_charging_project.utils import prepare_graph, extract_capex_expansion, solution_to_dict
     import good
-    from good.reload import deep_reload
+    from good import migrate
+
+    solution_to_dict = astr_v2.solution_to_dict
 
     tag = week["name"] if week is not None else horizon
     if only_ba:
@@ -759,7 +931,14 @@ def run_horizon(
     out_root = C.ensure_dir(C.ASTR_RESULTS_DIR / tag)
     n_hours = _num_hours(horizon) if horizon != "weekly" else C.NUM_HOURS_WEEK
 
-    deep_reload(good)
+    # No deep_reload(good) here. v1 reloaded the package so edits to the solver
+    # core were picked up without restarting, but v2 resolves a component's class
+    # through a registry populated at import time and then checks membership with
+    # issubclass. A deep reload rebinds every class to a new object, so the
+    # registry holds the pre-reload classes while the graph is validated against
+    # the post-reload ones, and every single component is rejected as "not a
+    # Node, Edge, Asset, Line or Policy subclass" -- 13,771 of them on a PG&E-only
+    # week, which reads like a schema failure rather than a stale import.
     wec_path = C.resolve_wec_json()
     with open(wec_path, encoding="utf-8") as fh:
         base_nlg = json.load(fh)
@@ -772,25 +951,32 @@ def run_horizon(
     with open(C.POLICIES_JSON, encoding="utf-8") as fh:
         policies = json.load(fh)
 
-    network_kw = dict(config.NETWORK_KW)
-    network_kw["steps"] = (0, n_hours)
-    # shortfall_cost / wastage_cost are deliberately NOT overridden here any
-    # more. They are benchmark-calibrated in ev_charging_project/config.py
-    # (VOLL $10,000/MWh and curtailment $1/MWh, both expressed in $/J), so
-    # config.py is the single source of truth; see
-    # docs/cost_calibration_methodology.tex.
+    # GOOD 2.0 replaced the lambda-string `inclusion_criteria` / `exclusion_criteria`
+    # with declarative `include` / `exclude` filters. convert_policies() does the
+    # translation, so the published policy file stays in its original form and
+    # the RPS ratios remain traceable to it. All 32 state standards convert.
+    policies = migrate.convert_policies(policies)
 
-    # Apply prepare_graph flags on a throwaway NX graph then... we apply in nlg after nest.
-    # prepare_graph expects NetworkX; apply after from_nlg inside _solve, so replicate
-    # the important flags onto nlg assets here.
-    nx_tmp = good.graph.graph_from_nlg(base_nlg)
-    nx_tmp = prepare_graph(nx_tmp, config)
-    # write back nuclear / storage duration into base_nlg
-    for nid, nd in nx_tmp._node.items():
-        match = next((n for n in base_nlg["nodes"] if n["id"] == nid), None)
-        if match is None:
-            continue
-        match["assets"] = nd.get("assets", match.get("assets"))
+    network_kw = dict(astr_v2.NETWORK_KW)
+    network_kw["steps"] = (0, n_hours)
+    time_step = float(network_kw.get("time_step", 1.0))
+    # shortfall_cost / wastage_cost are deliberately NOT overridden here. They
+    # are benchmark-calibrated in astr_v2.NETWORK_KW (VOLL $10,000/MWh and
+    # curtailment $1/MWh, now plain $/MWh rather than $/J), which is the single
+    # source of truth; see docs/cost_calibration_methodology.tex. Note that the
+    # v2 Network default for wastage_cost is $10,000/MWh -- equal to lost load,
+    # which would price curtailment as if it were a blackout -- so leaving it
+    # unset would silently change dispatch.
+
+    # v1 applied ev_charging_project.utils.prepare_graph here, which did five
+    # things. GOOD 2.x's own migrate.from_v1 now covers three of them: storage
+    # duration, per-line efficiency, and the wind/solar capex rescale (its
+    # vre_capex_rescale is 1e3 x 1e6, matching v1's WIND_SOLAR_MULT=1000 and the
+    # $/W -> $/MW conversion). Nuclear baseload is applied by astr_v2.to_v2 at
+    # solve time, and the optional_* capex flags are handled by
+    # _disable_solar_wind_capex above and _disable_capex_nlg below. So there is
+    # nothing left to pre-apply to base_nlg, and the throwaway round trip
+    # through NetworkX that used to happen here is gone.
 
     summary_rows = []
     compact_rows = []
@@ -921,38 +1107,41 @@ def run_horizon(
 
         try:
             solver_kw = _solver_kw(horizon, scen, log_path=scen_dir / "gurobi.log", crossover=scen_crossover)
-            solution, obj = _solve_nlg(nlg, policies, network_kw, solver_kw, f"{tag}-{scen}")
+            solution, built_graph, obj = _solve_nlg(nlg, policies, network_kw, solver_kw, f"{tag}-{scen}")
             if stage1_capex_out is not None:
                 decisions = _extract_capex_decisions(solution, nlg)
                 _save_stage1_capex(stage1_capex_out, scen, decisions)
-                built_w = sum(v for v in decisions.values() if v)
+                built_mw = sum(v for v in decisions.values() if v)
                 print(f"  stage-1 build: {sum(1 for v in decisions.values() if v)}"
-                      f"/{len(decisions)} extensible assets, {built_w / 1e6:,.0f} MW"
+                      f"/{len(decisions)} extensible assets, {built_mw:,.0f} MW"
                       f" total capacity -> {stage1_capex_out}")
             if scen == "S0" and stage1_capex is None and not no_capex:
-                baseline_expansions = extract_capex_expansion(solution, good.graph.graph_from_nlg(nlg))
+                baseline_expansions = astr_v2.extract_capex_expansion(solution, built_graph)
                 _save_baseline_expansions(baseline_capex_path, baseline_expansions)
-            gen = _generation_totals(solution)
-            gen.drop(columns=["hourly_W"], errors="ignore").to_csv(
+            gen = _generation_totals(solution, built_graph, time_step)
+            gen.drop(columns=["hourly_MW"], errors="ignore").to_csv(
                 scen_dir / "generation_by_asset.csv", index=False
             )
-            lines = _line_records(solution)
+            lines = _line_records(solution, built_graph)
             lines.to_csv(scen_dir / "line_flows_summary.csv", index=False)
-            bess = _bess_records(solution)
+            bess = _bess_records(solution, built_graph, time_step)
             if not bess.empty:
                 bess.to_csv(scen_dir / "bess_summary.csv", index=False)
-            sfw = _shortfall_wastage_totals(solution)
+            curtailment = _vre_curtailment(solution, built_graph, time_step)
+            sfw = _shortfall_wastage_totals(solution, time_step, curtailment)
             (scen_dir / "shortfall_wastage.json").write_text(json.dumps(sfw, indent=2), encoding="utf-8")
-            sbn = _shortfall_by_node(solution)
+            sbn = _shortfall_by_node(solution, time_step)
             if not sbn.empty:
                 sbn.to_csv(scen_dir / "shortfall_by_node.csv", index=False)
-            wbn = _wastage_by_node(solution)
+            wbn = _wastage_by_node(solution, time_step, curtailment)
             if not wbn.empty:
                 wbn.to_csv(scen_dir / "wastage_by_node.csv", index=False)
             print(
                 f"  shortfall={sfw['shortfall_GWh']:.3f} GWh "
-                f"({sfw['shortfall_J']*float(network_kw.get('shortfall_cost') or 0):.3e} $)  "
-                f"wastage={sfw['wastage_GWh']:.3f} GWh"
+                f"({sfw['shortfall_MWh']*float(network_kw.get('shortfall_cost') or 0):.3e} $)  "
+                f"wastage={sfw['wastage_GWh']:.3f} GWh "
+                f"(dumped {sfw['dumped_surplus_GWh']:.3f} + VRE curtailed "
+                f"{sfw['vre_curtailment_GWh']:.3f})"
             )
             co2 = _emissions_kg(gen)
             obj_path.write_text(f"objective={obj}\nco2_kg={co2}\nn_hours={n_hours}\n", encoding="utf-8")

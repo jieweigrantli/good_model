@@ -415,7 +415,13 @@ def build_nested_graph(
             handle = f"meso_{src}_{tgt}_{tag}"
             g["edges"].append(
                 {
-                    "id": handle,
+                    # The Link id must differ from the line handle. GOOD 2.x keeps
+                    # one global handle namespace across every component type, so
+                    # naming the Link and its single Transmission identically is a
+                    # collision ("handle is used twice") -- on a PG&E-only week
+                    # that rejected all 3,022 of them at once. The base WECC graph
+                    # already uses "source:target" for the Link, so match it.
+                    "id": f"{src}:{tgt}",
                     "_class": "Link",
                     "source": src,
                     "target": tgt,
@@ -430,7 +436,7 @@ def build_nested_graph(
             handle = f"iface_{src}_{tgt}_{tag}"
             g["edges"].append(
                 {
-                    "id": handle,
+                    "id": f"{src}:{tgt}",   # distinct from the line handle; see above
                     "_class": "Link",
                     "source": src,
                     "target": tgt,

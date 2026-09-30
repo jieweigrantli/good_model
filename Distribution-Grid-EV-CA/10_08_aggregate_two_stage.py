@@ -104,14 +104,15 @@ def collect(scen: str, only_ba: set[str] | None) -> dict | None:
         if gen.is_file():
             g = pd.read_csv(gen)
             if not g.empty:
-                for fuel, e in g.groupby("fuel")["energy_J"].sum().items():
+                for fuel, e in g.groupby("fuel")["energy_MWh"].sum().items():
                     fuels[str(fuel)] = fuels.get(str(fuel), 0.0) + float(e)
 
     if missing:
         print(f"  {scen}: incomplete, missing {', '.join(missing)}")
         return None
     for fuel, e in fuels.items():
-        tot[f"gen_{fuel}_GWh"] = e / 3.6e12
+        # MWh -> GWh; v1 summed energy_J and divided by 3.6e12
+        tot[f"gen_{fuel}_GWh"] = e / 1e3
     return tot
 
 

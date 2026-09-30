@@ -389,7 +389,7 @@ CALIFORNIA_REGIONS = [
     "WECC_SCE",
 ]
 
-# Seasonal week windows (hour-of-year start), matching ev_charging_project/config.py
+# Seasonal week windows (hour-of-year start), mirrored in astr_v2.SEASONAL_WEEKS
 SEASONAL_WEEKS = [
     {"name": "march", "start_hour": 1416, "month": "March"},
     {"name": "june", "start_hour": 3624, "month": "June"},

@@ -832,3 +832,132 @@ from an older network cannot be compared silently against a newer one.
 Costs (all $/J; 1 MWh = 3.6e9 J): shortfall 10,000 $/MWh, wastage 1 $/MWh,
 transmission operating 0.36 $/MWh. Derivations in
 `cost_calibration_methodology.tex`.
+
+## 12. Migration to GOOD 2.x
+
+The transmission layer now runs on the GOOD 2.x core (branch `v2-migration`;
+the 1.x production state is frozen at tag `1.1.3`). GOOD 2.x replaced the Pyomo
+model with a vectorized linopy/xarray one and moved from SI units to power
+system units. This section records what changed here, because several of the
+changes move results rather than just the code.
+
+### Why the units changed
+
+GOOD 1.x worked in watts, joules and $/J. On this model that put objective
+coefficients across ~13 orders of magnitude (7e-10 to 1e3) against right-hand
+sides up to 9e13, which is why the v1 solver configuration needed
+`ScaleFlag=1`, a loosened `OptimalityTol` and per-scenario `NumericFocus` just
+to terminate. GOOD 2.x uses MW, MWh and $/MWh throughout.
+
+Measured effect on the PG&E-only March week (962 nodes, 3,090 edges, `--no-capex`):
+
+| | GOOD 1.x | GOOD 2.x |
+|---|---:|---:|
+| build | several minutes | 6.2 s |
+| solve to certified optimal | ~19.5 min | 44 s |
+| solver parameters pinned | 9 | 4 |
+
+The v1 tuning is *not* carried over unexamined. `ScaleFlag`, `NumericFocus`,
+`Aggregate` and `OptimalityTol` are back at Gurobi's defaults, since each was
+compensating for a coefficient spread that no longer exists.
+`10_09_solver_param_sweep.py` should be re-run on the four-week horizon before
+any of them is pinned again.
+
+### Where the conversion happens
+
+Scripts `08_*` and `09_*` still build in v1 units and the conversion happens
+once, at the solver boundary, through upstream's own `good.migrate.from_v1()`
+(called from `astr_v2.to_v2`). Converting here rather than rewriting every
+builder was deliberate: `from_v1` is the tested converter, the meso tier and the
+base WECC tier get converted by the same pass so they cannot disagree, and
+upstream's data repairs come for free (1,360 trailing-colon profile keys fixed,
+2,010 unresolvable profile references dropped, hydro normalisation, and the
+25-hour-day wind repair).
+
+Three things sit outside `from_v1` and `astr_v2.to_v2` handles them after it:
+
+1. **`transformer_capacity`** is a node attribute, and `from_v1` converts only
+   assets, lines and profiles. Left alone it would arrive in watts and be read as
+   MW, a factor of 1e6 that would make every substation transformer limit
+   non-binding — silently, since a slack constraint raises nothing.
+2. **Storage durations.** `from_v1` replaces every storage spec with its own EPA
+   Platform v6 assumptions. The ASTR batteries are sized by `08_13`/`08_14` with
+   an explicit `--duration-h`, so that has to be put back or the sizing flag does
+   nothing. Note upstream assumes 10 h for existing pumped hydro where v1 assumed
+   8 h.
+3. **Nuclear baseload.** Was `prepare_graph`'s job in v1; no upstream equivalent.
+
+Profiles are also snapshotted and restored, because `from_v1` assumes 8,760-hour
+input: it pads short profiles to a full year and renormalises hydro over that
+padded year. Hydro is therefore normalised in `10_01` *before* slicing, over the
+real year. Run after slicing, `hydro_shape` would divide by the mean of 168 real
+hours and 8,592 copies of the 168th, scaling the hydro fleet by a factor that
+changes with whichever week was chosen.
+
+### Results changes that are real, not porting artifacts
+
+**Solar and wind became curtailable.** `from_v1` reclassifies 2,188 VRE assets
+(55,169 MW) from must-take `Load` to `Producer` with `dispatchable=True`. This is
+upstream fixing a v1 modelling error, and it changes two headline quantities:
+
+* **Curtailment moved.** In v1, surplus VRE had nowhere to go and appeared as
+  node `wastage`. Now the optimiser simply does not produce it, and node wastage
+  is **exactly zero** across all 962 nodes. Curtailment is therefore measured
+  in `_vre_curtailment` as availability minus production
+  (`capacity_factor x profile x installed_capacity - production`), and
+  `wastage_GWh` reports dumped surplus plus VRE curtailment so it stays
+  comparable with the v1 results. The two components are broken out in
+  `shortfall_wastage.json`.
+* **The RPS numerator changed**, because the renewable generation counted toward
+  each state standard is now a decision rather than a given.
+
+Two exclusions in the curtailment measurement are load-bearing. Only solar and
+wind count, and nothing carrying an `energy_budget_window` counts: `from_v1`
+gives all 1,360 hydro units a 24-hour energy budget, so hydro routinely produces
+below hourly availability because it is holding water, not spilling it.
+Including it reported 1,932 GWh of curtailment on a week where the real VRE
+figure is a fraction of that.
+
+### Fixes to our own inputs that v2 exposed
+
+* **Link/line handle collision.** `09_02` named each `Link` and its single
+  `Transmission` identically. GOOD 2.x keeps one global handle namespace, so all
+  3,022 lines on a PG&E week were rejected as duplicates. Links now use the base
+  WECC graph's own `source:target` convention.
+* **Edge key.** `good.graph.graph_from_nlg` hardcodes `edges="links"`, but every
+  graph file here stores edges under `"edges"` — which worked in v1 only because
+  that call passed no key and NetworkX 3.4+ defaults to `"edges"`.
+  `astr_v2.graph_from_nlg` reads the key off the data.
+* **`deep_reload(good)` removed.** GOOD 2.x resolves components through a
+  registry populated at import and checks membership with `issubclass`. A deep
+  reload rebinds every class, so the registry holds pre-reload classes while the
+  graph is validated against post-reload ones: all 13,771 components were
+  rejected as "not a Node, Edge, Asset, Line or Policy subclass", which reads
+  like a schema failure rather than a stale import.
+* **Policies.** GOOD 2.0 replaced lambda-string `inclusion_criteria` with
+  declarative `include`/`exclude` filters. `migrate.convert_policies()` does the
+  translation at load time, so `Examples/policies.json` stays in its published
+  form and the 32 state RPS ratios remain traceable to it.
+
+### Unit-facing changes to result files
+
+Result CSVs are now in MW and MWh. Columns were renamed rather than silently
+rescaled, so a stale file fails loudly instead of being read as the wrong
+magnitude: `energy_J`→`energy_MWh`, `mean_W`→`mean_MW`,
+`co2_kg_per_J`→`co2_kg_per_MWh`, `capacity_W`→`capacity_MW`,
+`mean_flow_W`/`peak_flow_W`→`_MW`, `shortfall_J`/`wastage_J`→`_MWh`,
+`discharge_Wh`→`discharge_MWh`, `planned_W`/`built_W`→`planned_MW`/`built_MW`.
+The `peak_hour_J` column is gone, since peak power is now read directly.
+
+`ASTR_COAL_CO2` is now in kg/MWh, not kg/J.
+
+Builder-side columns (`installed_capacity_W`, `interface_capacity_W`,
+`capex_capacity_W`) stay in watts: they are inputs to `from_v1`, not results.
+The two-stage capex files are in MW, and `_fix_capex_nlg` /
+`_apply_capex_floor_nlg` convert back to watts on the way into the graph.
+
+### Not yet done
+
+The four-week S0–S4 scenario set has not been re-run on v2, so the certified
+1.x results in section 11 stand as the current numbers. They are not directly
+comparable to what v2 will produce, for the VRE reclassification reason above.

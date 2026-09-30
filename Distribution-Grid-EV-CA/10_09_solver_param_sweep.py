@@ -48,9 +48,15 @@ sys.path.insert(0, str(PKG))
 
 import common as C
 
-# Each entry is a raw Gurobi parameter dict layered over the script's defaults
-# (Method=2, Crossover per --crossover, BarHomogeneous=1, Presolve=2,
-# NumericFocus=1, ScaleFlag=2, Aggregate=0).
+# Each entry is a raw Gurobi parameter dict layered over 10_01's defaults, which
+# the GOOD 2.x migration changed: now Method=2, Crossover per --crossover,
+# BarHomogeneous=1, Presolve=2, BarConvTol=1e-8, and ScaleFlag, NumericFocus,
+# Aggregate and OptimalityTol all left at Gurobi's own defaults. The v1 pins on
+# those last four were compensating for the $/J formulation's 13-order
+# coefficient spread, which the MW/$/MWh units removed, so every one of them is
+# worth re-measuring rather than assuming. In particular ScaleFlag=1 -- the single
+# parameter that made the v1 672 h horizon solvable -- is no longer pinned, so
+# "scale_std" below now tests a genuine alternative rather than the status quo.
 CONFIGS: dict[str, dict] = {
     # what the model runs today, for reference
     "baseline": {},

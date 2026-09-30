@@ -185,10 +185,11 @@ def plot_diurnal_dispatch() -> None:
             ax.set_title(f"{scen}: missing")
             continue
         df = pd.read_csv(p)
-        if "mean_W" not in df.columns:
-            ax.set_title(f"{scen}: no mean_W")
+        if "mean_MW" not in df.columns:
+            ax.set_title(f"{scen}: no mean_MW")
             continue
-        g = df.groupby("fuel")["mean_W"].sum() / 1e9
+        # mean_MW -> GW; v1 wrote mean_W and divided by 1e9
+        g = df.groupby("fuel")["mean_MW"].sum() / 1e3
         labels = [f for f in fuels_keep if f in g.index]
         vals = [g[f] for f in labels]
         ax.bar(range(len(labels)), vals, color=[colors.get(f, "#333") for f in labels])
