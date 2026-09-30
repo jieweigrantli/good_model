@@ -1198,6 +1198,77 @@ represent the year. Third, nothing is discounted — these are straight-line
 annualisations, not levelised costs. Fourth, `M_BESS` is itself an upper bound
 because cycling is unpriced, so storage's $/t is if anything understated.
 
+### Part 1: maximum CO2 saving potential by solution
+
+Three interventions, and only two of them save emissions. Four-week horizon,
+annualised by 13.
+
+| solution | ceiling, 4 wk | annualised | how the ceiling is established |
+|---|---:|---:|---|
+| corridor upgrades | **31,557 t** | 410,241 t/yr | S5's 11,838 MW reproduces the 10x relaxation exactly, so this is proven and not an estimate |
+| substation storage | **12,846 t** | 166,998 t/yr | a 10x fleet (5,496 MW) absorbs all 93.7 GWh of substation spill; nothing further is reachable |
+| transformer upgrades | **−10,825 t** | −140,725 t/yr | raises emissions; see below |
+
+**Transformer upgrades do not abate carbon.** S4 relieves the substation banks on
+top of S3's corridors and emissions *rise* by 10,825 t, because it serves 25.93
+GWh more EV load that S3 sheds, at 417.4 g/kWh. The benefit is avoided unserved
+energy, which is a reliability and service-quality result, and it should be
+reported on that axis rather than as a negative abatement.
+
+**Storage saturates against the spill, transmission does not.** The 550 MW fleet
+removes 42.1 of the 93.7 GWh of substation spill; the 5,496 MW fleet removes all
+93.7 GWh and the 74.17 GWh that remains sits entirely on WECC_IID, a balancing-area
+node with no substation battery and therefore outside the layer storage can reach.
+So 12,846 t is a hard ceiling for storage sited this way, against 31,557 t for
+corridors — storage can capture at most **41%** of what corridor relief captures,
+and only by building ten times the power.
+
+### Part 2: build range and cost per tonne
+
+Storage has a genuine supply curve, because each battery's discharge displaces gas
+directly and can be attributed. Capex at $1,977/kW (EPA Platform v6, 4-hour),
+15-year straight-line.
+
+| cumulative storage | CO2, 4 wk | share of ceiling | marginal $/t |
+|---|---:|---:|---:|
+| 83 MW | 2,825 t | 22% | $298 |
+| 182 MW | 5,383 t | 42% | $394 |
+| **223 MW** | **6,283 t** | **49%** | **$459** |
+| 264 MW | 6,793 t | 53% | $910 |
+| 337 MW | 7,445 t | 58% | $1,143 |
+| 550 MW | 8,995 t | 70% | $1,396 |
+| 5,496 MW | 12,846 t | 100% | $13,022 |
+
+Returns fall away sharply. The first 223 MW carries half the ceiling at under
+$459/t; the last 4,946 MW carries 30% of it at $13,022/t, which is 21x worse per
+MW than the first 550 MW and far beyond any plausible carbon value.
+
+Transmission's *capacity* is not a range — 11,838 MW is the proven minimum
+sufficient build — so its range comes from unit cost. The build is concentrated:
+the top 25 of 158 corridors are half of it and the top 50 are 78%, split 42 BA
+interfaces (4,916 MW) and 116 substation corridors (6,921 MW).
+
+| solution | build | overnight | life | $/t |
+|---|---|---:|---:|---:|
+| corridors @ $240/kW (25th pct) | 11,838 MW | $2.84B | 40 yr | **$173** |
+| corridors @ $456/kW (median) | 11,838 MW | $5.40B | 40 yr | $329 |
+| corridors @ $800/kW (75th pct) | 11,838 MW | $9.47B | 40 yr | $577 |
+| storage, efficient subset | 223 MW | $0.44B | 15 yr | **$459** |
+| storage, full fleet | 550 MW | $1.09B | 15 yr | $620 |
+| storage, ceiling | 5,496 MW | $10.86B | 15 yr | $1,042 |
+
+Corridor upgrades are cheaper per tonne across their whole cost range than storage
+is at any build size, and they reach 2.5x the ceiling. Storage's best subset
+($459/t for 223 MW) is competitive only with the upper half of the transmission
+cost range.
+
+Caveats, in the order they could change the conclusion. The per-kW transmission
+bracket is Li & Jenn's and is drawn from **distribution feeder** projects, while
+these corridors are sub-transmission and above — it is a placeholder, and it is
+doing much of the work in the comparison above. The four seasonal weeks are
+extrapolated by 13. Nothing is discounted. And `M_BESS` is an upper bound because
+cycling carries no cost, so storage's $/t is if anything understated.
+
 ### Storage against transmission: why the two are not substitutes
 
 On every absolute measure the transmission relaxation does more than the battery
