@@ -365,7 +365,7 @@ Ordered by how much they could move a result.
 | assumption | value | why it exists | risk |
 |---|---|---|---|
 | ICA line sections -> feeder | **max** across sections | headroom at a section includes upstream impedance, so the section nearest the substation is the bank-relevant one. Min gave 2.8% headroom against GNA's ~20%; max gives 46%; median gives 14% | **high** -- the choice moves overloaded PG&E nodes between 19 and 246. Median is best cross-validated; max is in use. `--section-agg` switches it |
-| `TYPICAL_LOADING` | 0.856 | divides assigned peak to derive a rating where nothing is published (1,883 nodes) | **high** -- it is the median of the *maximum* bank loading per substation, used as if it described a substation. The substation-level figure is **0.79**. Not yet corrected |
+| `TYPICAL_LOADING` | **0.64** | divides assigned peak to derive a rating where nothing is published (1,883 nodes) | medium -- corrected from 0.856, which reproduced no statistic in the source data. Now the substation-level figure, corroborated independently by SDG&E at 0.645. Full derivation in 0.8 |
 | generation switchyard rule | plant >= 100 MW, within 2 km, highest voltage wins | plants have their own switchyards and serve no load, so the TAZ test dropped them | medium -- fixes the two dominant cases; 19 of 42 plants >= 300 MW still land below 230 kV |
 | nuclear dispatch | forced to 100% of nameplate every hour | `dispatchable=False` applies both a max and a must-run min | medium -- correct as baseload, but it makes curtailment entirely a function of corridor adequacy |
 | transmission operating cost | 0.36 $/MWh per corridor | without it a corridor pair is a flat direction and energy cycles A->B->A for free; measured 293 TWh of gross flow against 40 TWh of generation | low -- necessary, and small against gas at ~38 $/MWh |
@@ -378,30 +378,6 @@ Ordered by how much they could move a result.
 | solver | `Method=2`, `Crossover=-1`, `BarConvTol` 1e-8; ScaleFlag, NumericFocus, Aggregate and OptimalityTol at Gurobi defaults | the v1 pins (`ScaleFlag=1` above all) existed to survive the $/J formulation's 13-order coefficient spread, which the GOOD 2.x units removed | low -- but the objective is **not** a convergence diagnostic here; see 0.5 |
 | storage duration, existing pumped hydro | 10 h | upstream `migrate.ASSUMPTIONS` (marked PLACEHOLDER); v1 assumed 8 h | low-medium -- a 25% change in pumped hydro energy capacity, inherited rather than chosen |
 | VRE curtailment measurement | availability minus production, solar and wind only, excluding energy-budget assets | GOOD 2.x makes solar and wind curtailable `Producer`s, so spill no longer appears as node `wastage` (which is now exactly zero) | medium -- the exclusions matter: counting budget-limited hydro reported 1,932 GWh against a true 40.5 GWh |
-
-### 0.5 Reproducibility of the objective
-
-The objective is dominated by unserved energy priced at a $10,000/MWh value of
-lost load, which makes it a poor convergence diagnostic for this model. Five
-certified-optimal solves of the identical PG&E March week returned objectives
-spanning 0.214% ($572,238):
-
-| configuration | time | objective | shortfall |
-|---|---:|---:|---:|
-| `Crossover=-1` | 44.8 s | 2.675762e8 | 14.333 GWh |
-| `Crossover=1` | 44.0 s | 2.676289e8 | 14.338 GWh |
-| `Crossover=1` (repeat) | ~45 s | 2.680771e8 | 14.383 GWh |
-| `Crossover=1` (repeat) | 43.7 s | 2.681484e8 | 14.390 GWh |
-| `Method=1` (dual simplex) | 53.1 s | 2.678213e8 | 14.358 GWh |
-
-The 57.0 MWh of shortfall these disagree about is worth $570,000 at VOLL on its
-own, which is 100.4% of the observed objective spread. Over the same five runs
-total CO2 was identical to the printed precision and curtailment agreed to within
-0.2%. `Crossover=1` is additionally not reproducible run to run.
-
-Runs should therefore be compared on **CO2, shortfall GWh and curtailment GWh**,
-not on the objective. An objective that moves a few tenths of a percent means a
-few tens of MWh of shortfall moved.
 
 ### 0.3 Data deficits
 
@@ -858,6 +834,194 @@ from an older network cannot be compared silently against a newer one.
 Costs (all $/J; 1 MWh = 3.6e9 J): shortfall 10,000 $/MWh, wastage 1 $/MWh,
 transmission operating 0.36 $/MWh. Derivations in
 `cost_calibration_methodology.tex`.
+
+### 0.5 Reproducibility of the objective
+
+The objective is dominated by unserved energy priced at a $10,000/MWh value of
+lost load, which makes it a poor convergence diagnostic for this model. Five
+certified-optimal solves of the identical PG&E March week returned objectives
+spanning 0.214% ($572,238):
+
+| configuration | time | objective | shortfall |
+|---|---:|---:|---:|
+| `Crossover=-1` | 44.8 s | 2.675762e8 | 14.333 GWh |
+| `Crossover=1` | 44.0 s | 2.676289e8 | 14.338 GWh |
+| `Crossover=1` (repeat) | ~45 s | 2.680771e8 | 14.383 GWh |
+| `Crossover=1` (repeat) | 43.7 s | 2.681484e8 | 14.390 GWh |
+| `Method=1` (dual simplex) | 53.1 s | 2.678213e8 | 14.358 GWh |
+
+The 57.0 MWh of shortfall these disagree about is worth $570,000 at VOLL on its
+own, which is 100.4% of the observed objective spread. Over the same five runs
+total CO2 was identical to the printed precision and curtailment agreed to within
+0.2%. `Crossover=1` is additionally not reproducible run to run.
+
+Runs should therefore be compared on **CO2, shortfall GWh and curtailment GWh**,
+not on the objective. An objective that moves a few tenths of a percent means a
+few tens of MWh of shortfall moved.
+
+### 0.6 What is measured and what is inferred, by layer
+
+Six independent data layers sit behind each substation and they have different
+provenance. A number being "in the model" says nothing about which of these it came
+from, so they are separated here. Shares are of each balancing area's substations or
+corridors.
+
+| layer | PG&E | SCE | SDG&E | LADWP / BANC / IID |
+|---|---|---|---|---|
+| node exists, located | 100% GRIP + HIFLD | 100% HIFLD | 100% HIFLD | 100% HIFLD |
+| **substation rating** | **73.3% measured** (66.6% ICA, 6.7% bank sums) | 41.4% published GNA | 0%, now **59% available** via 08_16 | **0%** |
+| **base load, hourly** | **43.4% measured** | 0% | 0%, peak only, no hourly | **0%** |
+| corridor exists | 41.4% documented (21.2 asserted, 20.2 confirmed) | 30.6% documented | 26.0% documented | 10.7 to 22.8% |
+| **corridor capacity (MVA)** | ~0% measured, **79.7% kV-to-MVA lookup** | 21.5% lookup, rest off-table voltages | **97.0% lookup** | 43 to 93% lookup |
+| EV load | modelled throughout (CSTDM + Li & Jenn charging model) | same | same | same |
+
+Three readings of that table matter more than the individual cells.
+
+**Corridor capacity is measured nowhere, including PG&E.** GRIP supplies line
+geometry and voltage but no thermal ratings, so every corridor rating in this model
+comes from the kV-to-MVA lookup (500 kV to 1500 MVA, 345 to 1000, 230 to 400, 161 to
+250, 138 to 200, 115 to 150, 69 to 80, 60 to 60) or sits at a voltage outside that
+table. `P_cong` is a corridor-congestion metric, so the layer that sets it is the
+least grounded one in the model. No ICA dataset fixes this; it needs a line rating
+source.
+
+**Outside PG&E, base load is never measured.** So the transformer constraint
+elsewhere compares an allocated load against a rating that is itself often derived
+from that same allocated load.
+
+**LADWP, BANC and IID have no capacity data and will not get any**: they are
+municipal utilities, not CPUC-regulated, so they publish no ICA or GNA. Li & Jenn
+(2024) excluded them for the same reason. Their absence is a scope boundary with
+published precedent rather than an oversight.
+
+### 0.7 Reallocation methods, in the order they are applied
+
+Load reaches a substation through four steps, three of which move it after the first
+assignment. All four conserve their input total exactly.
+
+**1. Geographic assignment (08_01, 08_02, 08_03).** TAZ to census block to feeder to
+substation, weighted by `w_s`, a 50/50 blend of housing and employment share. This
+sets the initial split and takes no account of installed capacity.
+
+**2. Measured substitution (`_substitute_measured_base`).** Where a utility publishes
+a substation load profile, that measurement replaces the allocated value, capped so
+measured substations never take more than 95% of the balancing area total. Follows
+Li & Jenn, who do not allocate base load at all.
+
+**3. Residual to the balancing-area node.** The gap between the NREL county demand
+anchoring the series and the sum of measured profiles is *not* pushed onto unmeasured
+substations. It goes to the BA node at transmission voltage. Forcing it downward was
+tried and got worse as measurement improved: it put 1,560 MW on LARKIN and 1,279 MW
+on SANTA MARIA and raised S0 shortfall from 75 to 291 GWh *because* coverage rose
+from 366 to 632 substations, the same gap divided among fewer nodes. Part of that gap
+is genuinely transmission-connected industrial load that never passes through a
+distribution substation.
+
+**4. Sibling reallocation by rating (`_reallocate_siblings_by_rating`).** Within each
+pool of unmeasured substations within 5 km of one another in the same balancing area,
+base load is split in proportion to published rating instead of by `w_s`. Step 1
+ignores installed capacity, which concentrates load arbitrarily where density is
+high. San Francisco was the clearest case: of eleven PG&E substations, the seven with
+measured profiles sat at a healthy 1.30 rating-to-load ratio while the four without
+were allocated 173.4 MW against 120.2 MW of rating, and the split among those four
+ran backwards. SF K took 86.9 MW on a 31.7 MW rating (2.74x) while SF G, the largest
+of the group at 43.0 MW, was given 13.1 MW (0.30x). Those two substations carried
+17.0 of the 20.09 GWh of transformer-attributable shortfall.
+
+Two guards make this non-circular, and two properties make it not a cap:
+
+* only substations with a **published** rating are moved, never one derived from
+  their own allocated peak;
+* only substations with **no measured profile** are moved;
+* the pool total is conserved, so a genuinely short neighbourhood stays short. SF's
+  four land at 1.44x after reallocation because 173.4 MW really does exceed 120.2 MW;
+* **EV load is never reallocated.** It comes from the charging model and is the
+  quantity under study, so moving it toward large transformers would erase the
+  mismatch these scenarios exist to measure.
+
+This replaces `_rebalance_to_ratings`, which capped each substation at 1.4x its
+rating and is now kept only as a diagnostic. That approach bounded the overload the
+model exists to discover and produced a spike rather than a distribution, with p90,
+p95, p99 and the maximum all landing on the cap.
+
+**Known cost, recorded rather than hidden:** within a pool every substation ends at
+the same loading ratio by construction, so base-load variation among unmeasured
+siblings is removed, and all remaining variation in who overloads comes from the EV
+increment. Absent measurement, uniform loading is a defensible prior and the
+proximity-weighted variation it replaces is a spurious one, but the base layer no
+longer distinguishes between siblings.
+
+### 0.8 Discussion items
+
+**`TYPICAL_LOADING`, and where the number came from.** This constant divides an
+assigned peak to derive a transformer rating for 1,883 substations, 60% of the model,
+and no external source exists for it. Recomputed from GRIP
+`DFSubstationArea___PeakFacilityLoadingPercent` (1,236 banks, 694 PG&E substations),
+three statistics can be formed:
+
+| statistic | value |
+|---|---:|
+| median over substations of the **max bank** loading | 0.7988 |
+| fleet-wide sum(bank load) / sum(bank rating) | 0.5298 |
+| median over substations of sum(load)/sum(rating) | **0.6362** |
+| SDG&E ICA, measured independently (08_16) | **0.6450** |
+
+The value used until now, **0.856, reproduces none of them**. The 0.79 quoted in
+earlier versions of this document is the first statistic, the max-of-banks median
+that the same document criticised, mislabelled as substation-level. A rating
+describes a substation rather than its busiest bank, so the third statistic is the
+right one, and it is the only one with independent corroboration: PG&E's 0.6362 and
+SDG&E's 0.6450 agree to 1.4% across two utilities and two unrelated datasets.
+**0.64** is now in use.
+
+Two caveats travel with it. `peakfacili` reaches 336% in the GRIP data, so some banks
+are recorded loaded above nameplate, which biases all three statistics upward by an
+unknown amount. And SDG&E's `PROJ_LOAD` is *projected* rather than as-built load, so
+0.645 is a forecast-basis loading.
+
+**Derived ratings are not what produces shortfall.** Worth stating because it is
+counter-intuitive and it bounds how much `TYPICAL_LOADING` can matter. Relaxing
+corridors removes 93% of the shortfall at derived-rating nodes (S0 47.39 to S0R
+3.25 GWh), while relaxing transformers removes 0% of it. Those nodes are
+delivery-limited, not transformer-limited, so the constant sets a rating that mostly
+does not bind.
+
+**The transformer-attributable congestion rests on eight nodes.** `S5 - S4` =
+25.93 GWh is the quantity separating corridor-bound from transformer-bound shortfall,
+and 20.09 GWh of it (77%) sat on eight PG&E substations whose GRIP bank-sum rating
+was **below the load already assigned to them**, ratios 0.36 to 0.80. All 46 such
+substations in the model have no measured profile, which is what identified the
+allocation as the fault and motivated step 4 above. `P_cong` (`S1 - S5`) is
+unaffected: the same 20.09 GWh appears in both terms and cancels exactly. `P_cong'`
+(`S1 - S4`) does not, and should be read with this in mind.
+
+**Bank sums are not uniformly too small.** Across the seven San Francisco substations
+holding both an ICA rating and a GRIP bank sum, the bank sum is usually the *larger*
+of the two, median factor 0.7. `02201`'s widely-cited 15.3x discrepancy, 9.88 MVA of
+banks against a 151.2 MW ICA rating, is a lone outlier rather than the pattern, so
+correcting bank sums toward ICA would make the tight substations tighter rather than
+looser.
+
+**Out-of-state asset aggregation is exact, not approximate.**
+`astr_v2.aggregate_region_assets` merges assets sharing profile shape, per-MWh cost,
+emission factor, capacity factor, dispatch flags and every bound. With no unit
+commitment in this model, no minimum up or down time, no start cost and no integer
+variables, such assets are one asset of the summed capacity exactly. Verified by
+solving a 48-hour model both ways: 5,590 assets against 4,165, objective identical to
+5.9e-14 relative. The clustering literature (Palmintier & Webster 2014, IEEE
+Transactions on Power Systems 29(3)) addresses the lossy problem of merging units
+with different costs and commitment constraints, which does not arise here. What is
+lost is reporting resolution: per-unit output for merged assets is no longer
+separable, while aggregates by fuel, region and emission factor are intact.
+
+**Two datasets acquired but not yet wired in.** `08_16` downloads SDG&E's full ICA
+(501,409 line sections, 107 substations) and `08_17` downloads SCE's transmission
+circuit inventory (1,030 circuits, 13,386 miles, 756 of them subtransmission) and
+section-level ICA. Neither yet feeds 08_06 or 08_08, so the provenance table in 0.6
+still describes the model as run. Wiring them in would take SDG&E from no measured
+ratings to roughly PG&E's level, and would let SCE's corridors be asserted from an
+inventory rather than inferred, which is the precondition for expanding the
+substation layer beyond PG&E at all.
 
 ## 12. Migration to GOOD 2.x
 

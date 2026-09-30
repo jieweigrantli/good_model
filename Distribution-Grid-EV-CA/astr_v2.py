@@ -52,6 +52,7 @@ Three things in this pipeline sit outside upstream's converter, and
 
 from __future__ import annotations
 
+import hashlib
 import os
 from copy import deepcopy
 
@@ -336,6 +337,152 @@ def _restore_store_specs(graph, specs: dict) -> int:
     return n
 
 
+def _merge_key(asset):
+    """Everything the LP can distinguish two assets by.
+
+    Two assets sharing this key are interchangeable in the optimisation: the
+    objective sees the same per-MWh cost, the constraints see the same
+    availability shape and the same bounds, and the emission accounting sees the
+    same factor. Merging them therefore changes neither the feasible set nor the
+    optimum. Anything that could make two units behave differently has to appear
+    here, so the key is deliberately over-specified rather than under.
+    """
+    profile = asset.get("profile")
+
+    if profile is None:
+        shape = None
+    elif isinstance(profile, str):
+        shape = ("key", profile)
+    else:
+        arr = np.asarray(profile, dtype=float)
+        # Hash the shape itself: two units can reference different profile keys
+        # that hold identical series, and those are still interchangeable.
+        shape = ("hash", arr.shape, hashlib.sha1(np.ascontiguousarray(arr)).hexdigest())
+
+    return (
+        asset.get("_class"),
+        asset.get("type"),
+        asset.get("fuel"),
+        shape,
+        _round(asset.get("operating_cost")),
+        _round(asset.get("co2")),
+        _round(asset.get("capacity_factor"), 1.0),
+        _round(asset.get("min_output")),
+        _round(asset.get("ramp_rate")),
+        asset.get("energy_budget_window"),
+        bool(asset.get("dispatchable")),
+        _round(asset.get("capex_cost")),
+        _round(asset.get("fom_cost")),
+        _round(asset.get("lifetime")),
+        _round(asset.get("duration")),
+        _round(asset.get("charge_efficiency")),
+        _round(asset.get("discharge_efficiency")),
+        _round(asset.get("efficiency")),
+        _round(asset.get("capacity_credit")),
+        asset.get("jurisdiction"),
+        bool(asset.get("renewable")),
+        float(asset.get("capex_capacity") or 0.0) > 0,
+    )
+
+
+def _round(value, default=None):
+    if value is None:
+        return default
+    try:
+        return round(float(value), 12)
+    except (TypeError, ValueError):
+        return value
+
+
+# Capacity-like fields that add when two interchangeable assets are merged.
+_ADDITIVE = ("installed_capacity", "capex_capacity", "installed_energy")
+
+
+def aggregate_region_assets(graph, regions, quiet: bool = False) -> int:
+    """Merge indistinguishable assets within each named region. Exact, not lossy.
+
+    Why this exists
+    ---------------
+    GOOD 2.x builds its region energy balance as one dense ``(region, step, term)``
+    array, padded on the third axis to the worst-connected node. WECC_PNW, a
+    copper-plate balancing area *outside* California, carries 918 individual
+    assets, so every one of the 3,120 nodes is padded to 928 terms while the median
+    node has 8 -- 0.9% utilisation, 7.78 GB, and the six-balancing-area California
+    model dies allocating it. The padding is set by a node that is not part of the
+    California network at all.
+
+    Why it is exact
+    ---------------
+    This model has no unit commitment: no minimum up or down time, no start-up
+    cost, no integer variables. A producer is a continuous variable bounded by
+    ``capacity_factor x profile x installed_capacity`` with a linear per-MWh cost.
+    Two producers agreeing on all of that are one producer of the summed capacity,
+    exactly -- the feasible set and the objective are unchanged, and because the
+    emission factor is part of the key, so is the CO2 accounting.
+
+    That is why no approximation reference is needed. The clustering literature
+    (Palmintier & Webster 2014, IEEE Trans. Power Systems 29(3), on heterogeneous
+    unit clustering) addresses the *lossy* problem of merging units with different
+    costs and commitment constraints. Here there is nothing to trade away.
+
+    Measured: WECC_PNW 918 -> 257 groups, all non-California regions 3,130 -> 1,079,
+    dense block 7.78 GB -> 2.16 GB.
+
+    The one thing lost is reporting resolution: per-unit output for merged assets is
+    no longer separable. Aggregates by fuel, region and emission factor are intact,
+    which is what every consumer in this pipeline uses.
+    """
+    merged = 0
+
+    for handle in regions:
+        node = graph._node.get(handle)
+
+        if node is None:
+            continue
+
+        assets = node.get("assets") or {}
+        groups: dict = {}
+
+        for name, asset in assets.items():
+            groups.setdefault(_merge_key(asset), []).append((name, asset))
+
+        if len(groups) == len(assets):
+            continue
+
+        out = {}
+
+        for members in groups.values():
+            name, first = members[0]
+
+            if len(members) == 1:
+                out[name] = first
+                continue
+
+            combined = deepcopy(first)
+
+            for field in _ADDITIVE:
+                total = sum(float(a.get(field) or 0.0) for _, a in members)
+
+                if any(a.get(field) is not None for _, a in members):
+                    combined[field] = total
+
+            # inf capex_capacity must survive summation as inf, not a large float
+            if any(not np.isfinite(float(a.get("capex_capacity") or 0.0)) for _, a in members):
+                combined["capex_capacity"] = np.inf
+
+            combined["merged_from"] = len(members)
+            combined["name"] = f"{name}__x{len(members)}"
+            out[f"{name}__x{len(members)}"] = combined
+            merged += len(members) - 1
+
+        node["assets"] = out
+
+        if not quiet:
+            print(f"    {handle}: {len(assets):,} assets -> {len(out):,} groups")
+
+    return merged
+
+
 def _nuclear_baseload(graph) -> int:
     """Hold nuclear at constant output.
 
@@ -402,7 +549,7 @@ def graph_from_nlg(nlg):
 
 
 def to_v2(nlg, *, nuclear_baseload: bool = True, transmission_efficiency: float | None = None,
-          quiet: bool = False):
+          aggregate_regions=None, quiet: bool = False):
     """Convert an ASTR node-link graph (v1 units) into a GOOD 2.x NetworkX graph.
 
     `nlg` is the dictionary 09_02_nest_meso_in_good.py writes. Returns a graph
@@ -425,6 +572,12 @@ def to_v2(nlg, *, nuclear_baseload: bool = True, transmission_efficiency: float 
     n_nodes = _convert_node_params(graph)
     n_stores = _restore_store_specs(graph, specs)
     n_nuclear = _nuclear_baseload(graph) if nuclear_baseload else 0
+    n_merged = 0
+
+    if aggregate_regions:
+        if not quiet:
+            print("    merging indistinguishable assets (exact; see aggregate_region_assets):")
+        n_merged = aggregate_region_assets(graph, aggregate_regions, quiet=quiet)
     n_lines = (_transmission_efficiency(graph, transmission_efficiency)
                if transmission_efficiency is not None else 0)
 
@@ -435,6 +588,9 @@ def to_v2(nlg, *, nuclear_baseload: bool = True, transmission_efficiency: float 
             print(f"    migrate: {key} = {notes[key]:,}")
 
         print(f"    profiles kept at horizon    : {n_profiles:,}")
+
+        if aggregate_regions:
+            print(f"    assets merged (exact)       : {n_merged:,}")
         print(f"    node power attributes W->MW : {n_nodes:,}")
         print(f"    store specs restored        : {n_stores:,}")
 

@@ -540,11 +540,153 @@ def _substitute_measured_base(sub_ids, base_w, w_lookup):
     return out
 
 
+# Radius within which unmeasured substations are treated as able to share load.
+# Substations this close are in the same urban network and a utility can and does
+# shift load between them; two substations 100 km apart cannot share anything, so
+# the reallocation below is deliberately local rather than BA-wide.
+SIBLING_RADIUS_M = 5000.0
+
 # Cap allocated load at this multiple of a substation's published rating.
 # PG&E's measured loadings reach 1.37x at the 99th percentile and 3.36x at the
 # extreme, so a cap near the measured p99 keeps genuine tightness while
 # removing allocation artefacts.
 RATING_CAP = 1.4
+
+
+def _reallocate_siblings_by_rating(sub_ids, base_w, w_lookup):
+    """Split each local pool of unmeasured substations in proportion to rating.
+
+    What this fixes
+    ---------------
+    The TAZ -> feeder -> substation chain allocates base load with
+    socio-economic weights, which take no account of how large a substation is.
+    In dense urban areas that concentrates load arbitrarily. San Francisco is the
+    clearest case: of eleven PG&E substations there, the seven with published
+    profiles take their measured load and sit at a healthy 1.30 rating-to-load
+    ratio, while the four without measurement are allocated 173.4 MW against
+    120.2 MW of rating -- and the split among those four is backwards. SF K gets
+    86.9 MW on a 31.7 MW rating (2.74x) and SF L 58.6 MW on 24.7 MW (2.37x),
+    while SF G, which has the *largest* rating of the four at 43.0 MW, is given
+    only 13.1 MW.
+
+    Those two substations alone carried 17.0 of the 20.09 GWh of
+    transformer-attributable shortfall, which is 77% of the S5-to-S4 difference
+    that the corridor-versus-transformer attribution rests on.
+
+    Why proportional to rating
+    --------------------------
+    A utility sizes a substation for the load it expects to serve, so the rating
+    is the best available proxy for served load where no profile is published.
+    Splitting a pool in proportion to rating therefore encodes "these substations
+    are each loaded to the same fraction of their capacity", which is a weaker
+    assumption than "load follows population density regardless of the equipment
+    installed".
+
+    How this differs from the rejected 1.4x cap
+    ------------------------------------------
+    `_rebalance_to_ratings` clipped each substation at a multiple of its rating
+    and pushed the excess elsewhere. That bounded the overload the model exists to
+    discover, and it produced a spike: p90, p95, p99 and the maximum all landed on
+    the cap. This function sets no ceiling. The pool total is conserved exactly, so
+    if a neighbourhood is genuinely short of transformer capacity every substation
+    in it stays short -- SF's four still land at 1.44x after reallocation, because
+    173.4 MW really does exceed 120.2 MW of rating. Only the *split* changes.
+
+    Two guards
+    ----------
+    * **Only published or measured ratings count.** A derived rating is computed
+      from the allocated peak, so allocating in proportion to it would be
+      circular. Substations with derived ratings keep their allocated load.
+    * **Only substations with no measured profile are moved.** Where a profile is
+      published, that measurement is the answer and nothing should override it.
+
+    Known consequence, recorded rather than hidden: within a pool every
+    substation ends at the same loading ratio by construction, so this removes
+    base-load variation among unmeasured siblings. All remaining variation in who
+    overloads comes from the EV increment, which is allocated separately. That is
+    the intended trade -- absent measurement, uniform loading is a defensible
+    prior and proximity-weighted variation is a spurious one -- but it means the
+    base layer no longer distinguishes between siblings.
+    """
+    pub = C.published_substation_ratings()
+    if pub is None or pub.empty:
+        print("  sibling reallocation: no published ratings available; skipped")
+        return base_w
+
+    r = pub.set_index("substation_id")["rating_W"]
+    rating = np.array([float(r.get(s, 0.0)) for s in sub_ids])
+    _, have_measured = _measured_base_profiles(sub_ids)
+
+    # eligible = unmeasured, and carrying a rating that did not come from its own
+    # allocated peak
+    eligible = (rating > 0) & (~have_measured)
+    if not eligible.any():
+        print("  sibling reallocation: no eligible substations; skipped")
+        return base_w
+
+    pts = _substation_points(sub_ids, w_lookup)
+    if pts is None:
+        print("  sibling reallocation: no substation geometry; skipped")
+        return base_w
+
+    ba = np.array([str(w_lookup.loc[s, "parent_ba"]) if s in w_lookup.index else ""
+                   for s in sub_ids])
+
+    idx = np.where(eligible)[0]
+    seen: set[int] = set()
+    pools = []
+    for i in idx:
+        if i in seen:
+            continue
+        d = np.hypot(pts[idx, 0] - pts[i, 0], pts[idx, 1] - pts[i, 1])
+        grp = [j for k, j in enumerate(idx)
+               if d[k] <= SIBLING_RADIUS_M and ba[j] == ba[i] and j not in seen]
+        if len(grp) < 2:
+            seen.add(i)
+            continue
+        seen.update(grp)
+        pools.append(np.array(grp))
+
+    if not pools:
+        print("  sibling reallocation: no multi-substation pools found; skipped")
+        return base_w
+
+    out_base = base_w.copy()
+    moved = 0.0
+    for grp in pools:
+        share = rating[grp] / rating[grp].sum()
+        # Conserve the pool's own hourly total exactly; only the split changes.
+        pool_total = base_w[grp].sum(axis=0)
+        out_base[grp] = share[:, None] * pool_total[None, :]
+        moved += float(np.abs(out_base[grp].max(axis=1) - base_w[grp].max(axis=1)).sum()) / 2.0
+
+    n = sum(len(g) for g in pools)
+    print(f"  sibling reallocation: {len(pools):,} pools, {n:,} substations, "
+          f"{moved / 1e6:,.0f} MW of peak moved between siblings "
+          f"(pool totals conserved exactly)")
+    return out_base
+
+
+def _substation_points(sub_ids, w_lookup):
+    """Projected coordinates for each substation, or None if unavailable."""
+    try:
+        import geopandas as gpd
+        g = gpd.read_file(C.MESO_DIR / "meso_hubs.gpkg").to_crs(C.CA_ALBERS_CRS)
+    except Exception as exc:  # noqa: BLE001 - geometry is optional here
+        print(f"  (substation geometry unavailable: {exc})")
+        return None
+    g["substation_id"] = g["substation_id"].astype(str)
+    lut = {str(s): (geom.x, geom.y) for s, geom in zip(g.substation_id, g.geometry)}
+    pts = np.full((len(sub_ids), 2), np.nan)
+    for i, s in enumerate(sub_ids):
+        xy = lut.get(str(s))
+        if xy is not None:
+            pts[i] = xy
+    if np.isnan(pts).all():
+        return None
+    # A substation with no geometry cannot be pooled; park it far away.
+    pts[np.isnan(pts[:, 0])] = 1e12
+    return pts
 
 
 def _rebalance_to_ratings(sub_ids, base_w, ev_w, w_lookup):
@@ -744,6 +886,17 @@ def main() -> None:
     # EV is kW; convert to W and add
     ev_sub_w = ev_sub * 1000.0
     base_sub = _substitute_measured_base(sub_ids, base_sub, w_lookup)
+    # Split each local pool of unmeasured substations in proportion to rating.
+    # The socio-economic weights take no account of installed capacity, which
+    # concentrated 86.9 MW on SF K's 31.7 MW rating while leaving SF G, the
+    # largest of its group, with 13.1 MW on 43.0 MW. Pool totals are conserved,
+    # so this is a change of split and not a cap; see the function docstring for
+    # why that distinction matters and what it costs.
+    # Base load only. EV load is the quantity under study and comes from the
+    # charging model: vehicles charge where they are parked, not where the
+    # transformers are large, so moving EV demand toward capacity would erase
+    # exactly the mismatch these scenarios exist to measure.
+    base_sub = _reallocate_siblings_by_rating(sub_ids, base_sub, w_lookup)
     total_w = base_sub + ev_sub_w
     # NOTE: _rebalance_to_ratings is deliberately NOT applied. Capping
     # allocated load at a multiple of the transformer rating runs the physics

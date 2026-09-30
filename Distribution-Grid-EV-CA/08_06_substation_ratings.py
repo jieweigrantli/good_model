@@ -55,11 +55,33 @@ import common as C
 OUT_CSV = C.MESO_DIR / "substation_ratings.csv"
 SCE_DIR = C.DATA_DIR / "ica" / "sce"
 
-# Median peak facility loading across PG&E's published banks. Used to turn an
-# assigned peak into a plausible rating where nothing is published, so derived
-# substations carry the same headroom ratio as measured ones rather than an
-# arbitrary multiple.
-TYPICAL_LOADING = 0.856
+# Substation-level loading: sum(bank load) / sum(bank rating), median across
+# substations. Used to turn an assigned peak into a plausible rating where nothing
+# is published, so derived substations carry the same headroom ratio as measured
+# ones rather than an arbitrary multiple.
+#
+# Provenance, because this constant has been wrong twice and no external source
+# exists for it. Recomputed from GRIP DFSubstationArea___PeakFacilityLoadingPercent
+# (1,236 banks, 694 PG&E substations), three statistics can be formed:
+#
+#   median over substations of the MAX bank loading      0.7988
+#   fleet-wide sum(bank load) / sum(bank rating)         0.5298
+#   median over substations of sum(load)/sum(rating)     0.6362   <- this one
+#
+# The value previously used, 0.856, reproduces none of them, and the 0.79 quoted
+# in the model specification is the first statistic -- the max-of-banks median
+# that the same document criticises -- mislabelled as substation-level. A rating
+# describes a substation, so the substation-level statistic is the right one.
+#
+# It is also the only one corroborated independently: SDG&E's ICA gives a measured
+# loading of 0.6450 on the capacity = headroom + baseload basis (08_16), agreeing
+# with PG&E's 0.6362 to within 1.4% across two utilities and two unrelated
+# datasets. 0.64 sits between them.
+#
+# Caveat kept with the number: peakfacili reaches 336% in the GRIP data, so some
+# banks are recorded loaded above nameplate, which biases all three statistics
+# upward by an unknown amount. See docs/model_specification.md.
+TYPICAL_LOADING = 0.64
 
 # Floor so a node with near-zero assigned load still has a usable interface.
 MIN_RATING_W = 5e6
