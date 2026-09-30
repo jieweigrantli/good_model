@@ -73,14 +73,24 @@ SCE_DIR = C.DATA_DIR / "ica" / "sce"
 # that the same document criticises -- mislabelled as substation-level. A rating
 # describes a substation, so the substation-level statistic is the right one.
 #
-# It is also the only one corroborated independently: SDG&E's ICA gives a measured
-# loading of 0.6450 on the capacity = headroom + baseload basis (08_16), agreeing
-# with PG&E's 0.6362 to within 1.4% across two utilities and two unrelated
-# datasets. 0.64 sits between them.
+# The same per-substation statistic can now be measured on all three investor-owned
+# utilities from their own published data:
 #
-# Caveat kept with the number: peakfacili reaches 336% in the GRIP data, so some
-# banks are recorded loaded above nameplate, which biases all three statistics
-# upward by an unknown amount. See docs/model_specification.md.
+#   PG&E   GRIP bank ratings and loadings          694 substations   0.6362
+#   SCE    ICA projected load + remaining capacity 700 substations   0.5017
+#   SDG&E  ICA section headroom + projected load    96 substations   0.6390
+#
+# PG&E and SDG&E agree to 0.4% from unrelated datasets, which is what supports 0.64.
+# SCE dissents at 0.5017, 21% lower, and since this constant is applied mostly to
+# HIFLD-sourced nodes and SCE holds the largest population of those, 0.64 probably
+# over-rates SCE substations. A per-utility constant is the obvious refinement. The
+# honest uncertainty band on this parameter is 0.502 to 0.639, not a single number.
+#
+# Caveats kept with the number: peakfacili reaches 336% in the GRIP data, so some
+# banks are recorded loaded above nameplate and the PG&E statistics are biased
+# upward by an unknown amount; SDG&E's PROJ_LOAD and SCE's PROJECTED_LOAD are
+# projected rather than as-built; and SDG&E rests on 96 substations against ~700
+# for the other two. See docs/model_specification.md section 0.8.
 TYPICAL_LOADING = 0.64
 
 # Floor so a node with near-zero assigned load still has a usable interface.

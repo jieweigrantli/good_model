@@ -959,25 +959,42 @@ and no external source exists for it. Recomputed from GRIP
 `DFSubstationArea___PeakFacilityLoadingPercent` (1,236 banks, 694 PG&E substations),
 three statistics can be formed:
 
-| statistic | value |
+Three statistics can be formed from PG&E alone:
+
+| statistic on PG&E GRIP banks | value |
 |---|---:|
 | median over substations of the **max bank** loading | 0.7988 |
 | fleet-wide sum(bank load) / sum(bank rating) | 0.5298 |
 | median over substations of sum(load)/sum(rating) | **0.6362** |
-| SDG&E ICA, measured independently (08_16) | **0.6450** |
 
 The value used until now, **0.856, reproduces none of them**. The 0.79 quoted in
 earlier versions of this document is the first statistic, the max-of-banks median
-that the same document criticised, mislabelled as substation-level. A rating
-describes a substation rather than its busiest bank, so the third statistic is the
-right one, and it is the only one with independent corroboration: PG&E's 0.6362 and
-SDG&E's 0.6450 agree to 1.4% across two utilities and two unrelated datasets.
-**0.64** is now in use.
+that the same document criticised, mislabelled as substation-level.
 
-Two caveats travel with it. `peakfacili` reaches 336% in the GRIP data, so some banks
-are recorded loaded above nameplate, which biases all three statistics upward by an
-unknown amount. And SDG&E's `PROJ_LOAD` is *projected* rather than as-built load, so
-0.645 is a forecast-basis loading.
+`TYPICAL_LOADING` divides a *single* substation's assigned peak, so the statistic it
+needs is the per-substation one, and that can now be measured on all three investor-
+owned utilities from their own published data:
+
+| utility | substations | fleet sum/sum | **median per substation** |
+|---|---:|---:|---:|
+| PG&E, GRIP bank ratings and loadings | 694 | 0.5298 | **0.6362** |
+| SCE, ICA projected load + remaining capacity | 700 | 0.5160 | **0.5017** |
+| SDG&E, ICA section headroom + projected load (08_16) | 96 | 0.6447 | **0.6390** |
+
+**PG&E and SDG&E agree to 0.4%** on the per-substation median, from wholly unrelated
+datasets, which is what supports **0.64**. **SCE dissents at 0.5017**, 21% lower.
+Since `TYPICAL_LOADING` is applied mostly to HIFLD-sourced nodes and SCE holds the
+largest population of those, 0.64 probably over-rates SCE substations, and a
+per-utility constant is the obvious refinement once SCE's join coverage improves.
+The three per-substation medians span 0.502 to 0.639, so that is the honest
+uncertainty band on this parameter, not a single number.
+
+Three caveats travel with it. `peakfacili` reaches 336% in the GRIP data, so some
+banks are recorded loaded above nameplate, which biases the PG&E statistics upward by
+an unknown amount. SDG&E's `PROJ_LOAD` and SCE's `PROJECTED_LOAD` are *projected*
+rather than as-built, so both are forecast-basis loadings. And SDG&E rests on 96
+substations against roughly 700 for the other two, so its agreement with PG&E carries
+less weight than the sample sizes make it look.
 
 **Derived ratings are not what produces shortfall.** Worth stating because it is
 counter-intuitive and it bounds how much `TYPICAL_LOADING` can matter. Relaxing
@@ -1013,6 +1030,15 @@ Transactions on Power Systems 29(3)) addresses the lossy problem of merging unit
 with different costs and commitment constraints, which does not arise here. What is
 lost is reporting resolution: per-unit output for merged assets is no longer
 separable, while aggregates by fuel, region and emission factor are intact.
+
+**SCE's rating ceiling is a join problem, not a data problem.** SCE publishes 735
+ICA substations with projected load and remaining capacity, and 08_04 already
+downloads them, yet only 527 of the model's 1,273 SCE nodes carry an SCE rating
+(41.4%). The shortfall is `_sce_name_to_node`, which matches SCE substation points to
+HIFLD nodes by nearest-neighbour within 2 km. Even a perfect join would reach only
+735/1,273 = **57.7%**, because HIFLD lists more substations in SCE territory than
+SCE's ICA covers. So the reachable improvement is 41.4% to 57.7%, and it comes from
+better matching rather than more downloading.
 
 **Two datasets acquired but not yet wired in.** `08_16` downloads SDG&E's full ICA
 (501,409 line sections, 107 substations) and `08_17` downloads SCE's transmission
