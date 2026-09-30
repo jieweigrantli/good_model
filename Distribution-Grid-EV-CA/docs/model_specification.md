@@ -1122,6 +1122,67 @@ batteries could charge but never discharge. Charged energy (175.10 GWh) exceeds
 discharged by 10.0%, which is the round-trip loss and confirms the 0.90 efficiency
 survived `from_v1`'s storage override.
 
+### Storage against transmission: why the two are not substitutes
+
+On every absolute measure the transmission relaxation does more than the battery
+fleet:
+
+| vs S1 | ΔCO2 | Δshortfall | Δspill |
+|---|---:|---:|---:|
+| S2, 550 MW storage | 8,830 t | 0.026 GWh | 42.1 GWh |
+| S3, corridors x10 | 31,700 t | 61.031 GWh | 76.4 GWh |
+
+Storage is more efficient per unit of capacity, though, and that is the
+interesting part. S3 is granted 6,521,774 MW of extra corridor capacity but its
+peak flows exceed the S1 ratings on only 155 of 3,084 corridors, by 11,830 MW in
+total — **0.181% of the grant**. Against the capacity that actually does work:
+
+| | CO2 saved | capacity | per MW |
+|---|---:|---:|---:|
+| storage | 8,830 t | 550 MW | 16.05 t/MW |
+| transmission | 31,700 t | 11,830 MW needed | 2.68 t/MW |
+
+so storage is about **6x more effective per MW** (3,303x against the untargeted
+10x grant, which is an artifact of the diagnostic rather than a result).
+
+Three things explain it.
+
+**Both interventions act only on natural gas.** Wind, solar, nuclear and
+geothermal generation is identical to the decimal across S1, S2 and S3 —
+10,256.4, 3,398.9, 4,943.9 and 1,965.4 GWh — because the horizon-summed RPS holds
+them at full output in every case. Neither intervention adds renewable energy;
+both work by delivering energy that would otherwise be dumped, displacing gas.
+The arithmetic closes on the fuel shift alone: S2's −22.6 GWh gas, −1.9 coal and
+−0.9 biomass imply 8,969 t against a measured 8,830 t, and S3's −82.8 GWh gas,
++3.9 coal, −5.7 oil and −4.9 biomass imply 30,842 t against 31,700 t. So the spill
+is the ceiling on both, and whichever intervention converts spill to delivered
+energy most cheaply wins on efficiency.
+
+**Storage is precisely sited and the transmission relaxation is not.** `08_14`
+places all 550 MW at exactly the eight nodes that spill, each with a real
+discharge window. S3 multiplies every corridor by ten whether it binds or not, so
+99.8% of the grant is slack.
+
+**They relieve different constraints, which is why storage cannot replace
+transmission.** Storage moves energy in time at one node; it cannot move energy
+between nodes. S2 cuts shortfall by 0.026 GWh out of 91.111 — essentially nothing
+— while S3 cuts it by 61.031 GWh. None of the eight battery nodes is one of the 99
+nodes carrying shortfall, and the five largest deficit nodes are short in 672 of
+672 hours, so a battery there could never charge in the first place. The deficit
+is an import limit, and only a bigger import path fixes it.
+
+Storage also pays a large efficiency toll on the spill it captures: 175.10 GWh
+charged against 157.59 GWh discharged, so the 17.51 GWh of round-trip loss is 42%
+of the 42.1 GWh of spill it removes.
+
+**`M_BESS` is an upper bound.** The prescribed batteries carry no
+`operating_cost`, so cycling is free, and the fleet runs 71.7 cycles in four weeks
+— about 2.6 a day, against roughly one a day for real grid storage. EPA Platform
+v6 gives new batteries $7.1/MWh of variable O&M, which on 157.59 GWh of discharge
+would be $1.12M against roughly $0.86M of avoided gas fuel cost. A sensitivity run
+with `operating_cost` set would bound `M_BESS` from below; until then the 8,830 t
+should be read as the most storage could do, not what it would do.
+
 ### Not yet done
 
 `10_02_compute_P_cong_M_BESS.py` keys on the bare `four_week` tag and reports
