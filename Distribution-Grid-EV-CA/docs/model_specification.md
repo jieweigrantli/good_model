@@ -1045,8 +1045,85 @@ to curtail VRE instead. This is why `wastage_GWh` reports the sum of the two: th
 physical quantity is the same and only the mechanism the optimiser reaches for
 changes with the horizon.
 
+### Full v2 scenario results
+
+All six scenarios, four-week horizon (672 h), PG&E-only nesting, `--no-capex`,
+corrected topology and per-generator emission factors. 30 September 2026.
+
+| scenario | CO2 Mt | shortfall GWh | spill GWh | solve |
+|---|---:|---:|---:|---:|
+| S0 no EV | 6.4170 | 74.753 | 169.077 | 292 s |
+| S0R no EV, relaxed | 6.3817 | 19.896 | 91.502 | 275 s |
+| S1 EV, constrained | 6.6546 | 91.111 | 167.890 | 374 s |
+| S2 EV + BESS | 6.6457 | 91.085 | 125.785 | 390 s |
+| S3 EV, lines relaxed | 6.6229 | 30.080 | 91.465 | 323 s |
+| S4 EV, lines + transformers | 6.6338 | 4.146 | 91.465 | 287 s |
+
+```
+P_cong  (S1 - S3, corridors only)           = +31,700 t
+P_cong' (S1 - S4, corridors + transformers) = +20,737 t
+M_BESS  (S1 - S2)                           =  +8,830 t
+```
+
+**`P_cong` is now resolved, where in 1.x it was not.** The 1.x result was −1,458 t:
+the wrong sign, and inside a noise floor then estimated at ~6,770 t. Two repeat
+four-week S1 solves differ by **177 t of CO2** (0.0027%), so `P_cong` sits 179x
+that floor, `P_cong'` 117x and `M_BESS` 50x.
+
+The floor is far tighter than the 1.x estimate because that estimate came from
+objective variation, and the objective is dominated by shortfall priced at VOLL
+(see 0.5). The same repeat pair differs by $459,871 in objective and 46 MWh in
+shortfall, and 46 MWh x $10,000/MWh = $460,000 — so essentially all of the
+objective variation is unserved energy, which barely touches the generation mix
+and therefore barely touches CO2. Comparing runs on CO2 rather than the objective
+is what makes these differences resolvable at all.
+
+### Consequential EV emission factor
+
+Each EV scenario against the no-EV baseline of its own delivery regime, so the
+non-EV benefit of relaxing transmission cancels rather than being charged to EVs.
+Delivered energy is the 626.75 GWh of EV demand added, less the extra shortfall
+the EV load itself causes.
+
+| | baseline | ΔCO2 | delivered | EF |
+|---|---|---:|---:|---:|
+| S1 | S0 | 237,587 t | 610.4 GWh | 389.2 g/kWh |
+| S2 | S0 | 228,757 t | 610.4 GWh | 374.8 g/kWh |
+| S3 | S0R | 241,159 t | 616.6 GWh | 391.1 g/kWh |
+| S4 | S0R | 252,122 t | 642.5 GWh | 392.4 g/kWh |
+
+Flat at roughly 389 g/kWh across delivery regimes, against 410 g/kWh in 1.x —
+consistent with the systematic −1.6% CO2 offset. Storage is the only case that
+moves it materially, to 374.8.
+
+**S4 emits more than S3 in absolute terms** (6.6338 against 6.6229 Mt) despite
+relaxing strictly more. That is a delivered-energy effect and not an
+inconsistency: relaxing the substation transformers lets S4 serve 642.5 GWh of EV
+load where S3 serves 616.6 GWh and sheds the rest. Per kWh the two agree to 0.3%.
+
+### Storage in S2
+
+The fleet is re-sized against the v2 spill figures by `08_14`, since the
+curtailment file it reads is one this migration changed: 8 substations, 550 MW,
+2,198 MWh at 4 hours.
+
+| | 1.x | 2.x |
+|---|---:|---:|
+| fleet | 1,163 MW | 550 MW |
+| batteries that cycled | 6 of 6 | 8 of 8 |
+| fleet cycles over 672 h | 70.8 | 71.7 |
+| discharged | 144.11 GWh | 157.59 GWh |
+| spill reduction (S1 → S2) | 50.8 GWh | 42.1 GWh |
+
+Comparable work from under half the power rating, because every node in the new
+fleet has a real discharge window: `hours_free` runs 104 to 509 across the eight,
+where in 1.x the two nodes holding 92% of the spill had `hours_free = 0` and their
+batteries could charge but never discharge. Charged energy (175.10 GWh) exceeds
+discharged by 10.0%, which is the round-trip loss and confirms the 0.90 efficiency
+survived `from_v1`'s storage override.
+
 ### Not yet done
 
-S2, S3, S4 and S0R have not been re-run on v2, so the section 11 numbers stand
-for those. S2 needs the BESS fleet re-sized against the new spill figures, since
-`08_14` reads the curtailment file this migration changed.
+`10_02_compute_P_cong_M_BESS.py` keys on the bare `four_week` tag and reports
+`incomplete` for `four_week_WEC_CALN`, so the metrics above are computed directly
+from the per-scenario outputs rather than by that script.
