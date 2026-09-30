@@ -1,0 +1,12 @@
+Traceback (most recent call last):
+  File "E:\GitHub\good_model\Distribution-Grid-EV-CA\10_01_run_scenarios_S0_S3.py", line 210, in run_season
+    solution, obj = _solve_graph(g, policies, network_kw, solver_kw, f"{name}-{scen}")
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\GitHub\good_model\Distribution-Grid-EV-CA\10_01_run_scenarios_S0_S3.py", line 97, in _solve_graph
+    network = good.optimization.network.Network(**network_kw).from_graph(graph, policies)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\GitHub\good_model\good\optimization\network.py", line 455, in from_graph
+    self.add(_class, source, **node)
+  File "E:\GitHub\good_model\good\optimization\network.py", line 550, in add
+    raise GOOD_InvalidBaseClass
+good.optimization.exceptions.GOOD_InvalidBaseClass: Invalid base class

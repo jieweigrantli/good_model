@@ -1,0 +1,834 @@
+# ASTR2026 Model Specification
+
+California substation-level transmission layer nested inside a WECC balancing-area model.
+
+**Status:** as of 23 September 2026. First computable `P_cong`: +417 kt CO2 for the June
+week on a PG&E-only configuration. The full-California model still cannot solve S1 or S2.
+
+---
+
+## 1. Structure
+
+Two tiers in a single linear program.
+
+| Tier | Unit | Count | Source |
+|---|---|---|---|
+| 1 — balancing areas | WECC BA | 20 outside CA, 6 inside | `Examples/WEC_modified.json` |
+| 2 — California substations | substation | 3,044 nodes, 4,528 corridors | GRIP + HIFLD + CEC + OSM |
+
+The six California BAs are `WEC_CALN`, `WECC_SCE`, `WEC_SDGE`, `WEC_LADW`, `WEC_BANC`,
+`WECC_IID`. Inside California the BA node represents the rest of that utility's system;
+outside California it represents an external system not modelled at substation level.
+
+**CA-internal BA-to-BA edges are removed.** The base WECC graph carries 12 directed
+aggregate paths between California BAs (SCE↔CALN 3.0/3.7 GW, SCE↔LADWP 3.8, SCE↔SDG&E 1.3,
+BANC↔CALN 2.8, IID↔SCE 0.6, IID↔SDG&E 0.1). With the substation network nested inside the
+same BAs those corridors exist twice, and the aggregate copy is always the cheaper route, so
+no modelled corridor could bind. The 20 CA↔outside edges (18.1 GW per direction) are kept.
+
+---
+
+## 2. Network physics
+
+Transmission is **NTC pipe-flow**, two opposing directed arcs per corridor:
+
+```
+-F̄ℓ - zᵀℓ ≤ fℓ,t ≤ F̄ℓ + zᵀℓ
+```
+
+This is a linear surrogate for angle-based DC flow `fℓ,t = bℓ(θi,t − θj,t)`. Pipe-flow
+permits transfers that Kirchhoff's voltage law would forbid, so **reported congestion is a
+lower bound on physical congestion**. Angle-based DC OPF is future work. The choice keeps
+the 8,760-hour co-optimization of dispatch and capacity a linear program at substation
+resolution.
+
+**Not represented:** voltage, reactive power, and contingencies. Substation transformer
+limits *are* represented (see §6).
+
+---
+
+## 3. Topology reconstruction
+
+WECC withholds transmission topology from the public Anchor Data Set, so connectivity is
+reconstructed from line geometry.
+
+**Sources.** GRIP `TransmissionLines` (PG&E, 60/70/115/230/500 kV), CEC statewide lines
+(33–500 kV, 6,839 rows), HIFLD. The HIFLD line layer additionally carries `SUB_1`/`SUB_2`
+named endpoints for ≥100 kV lines — 86% of 2,171 CA lines have both named. OpenStreetMap
+adds 3,981 substation footprints and 43,841 power ways whose shared node ids carry real
+connectivity. Both are used; see "Asserted topology" below.
+
+**Method.**
+1. Each line part's endpoints snap to a substation within 1,500 m. Model nodes win inside a
+   400 m precedence radius; beyond that the nearer of model node and junction substation
+   wins. The 1,500 m figure follows published open-data pipelines (Bor et al. 2024).
+2. Snapping is **voltage-gated**: an endpoint may only terminate at a site rated at or above
+   the line's voltage, or of unknown rating. Ungated, a 230 kV line could terminate at a
+   21 kV distribution yard purely because it was nearest.
+3. Lines that *pass through* a substation are **split** at it, subject to the same voltage
+   gate. Snapping only ever looked at endpoints, so a substation on the wire was invisible:
+   among nodes reaching no line at all, the median perpendicular distance to line geometry
+   was 44 m while the median distance to the nearest endpoint was 898 m.
+4. Remaining endpoints cluster into pass-through nodes; runs of pass-through geometry are
+   contracted to substation-to-substation corridors.
+5. Contraction emits a **minimum spanning tree** over each run's terminals, weighted by
+   routed distance — not all pairs. All-pairs treated a shared corridor as a clique and
+   produced edges like San Ramon–Vincent at 499 km, which is not a circuit that exists.
+
+**Site voltage.** GRIP `EDSubstations` report the *secondary* voltage, so Vaca Dixon — a
+500/230 kV yard — reads as 12 kV. Voltage gating therefore uses the highest voltage of any
+substation record within 400 m, treating a yard as one site.
+
+**Asserted topology.** HIFLD's line layer names both terminal substations (`SUB_1`/`SUB_2`)
+and OSM maps substations as polygons and links ways through shared node ids. Both are used:
+1,437 corridors are confirmed or asserted by a published source rather than inferred from
+proximity. Above 100 kV that is 57–67% of corridors; below 100 kV only 17%, because HIFLD's
+layer stops at 100 kV and OSM's coverage there is uneven.
+
+**Synthetic feeds.** 342 tagged radial feeds connect components the data leaves islanded,
+each sized to its own peak so it cannot act as a bulk bypass. Without them an islanded node
+cannot import, and its demand becomes shortfall that reads as congestion — biasing `P_cong`
+toward the finding. `--no-synthetic-feeds` disables them for with/without reporting.
+
+**Resulting graph.** 4,528 corridors, median 4.3 km. One connected component: all 3,044
+nodes and 100% of peak demand.
+
+---
+
+## 4. Demand allocation
+
+### 4.1 EV charging — TAZ → block → feeder → substation
+
+Follows Li & Jenn (2024), whose code is in `R_Yanning/`.
+
+1. **TAZ → census block.** Home charging by 2010 block population; workplace and public
+   charging by LODES 2019 workplace-area jobs. Renormalised within TAZ.
+2. **Block → feeder.** Longest intersection where the block polygon meets a feeder line;
+   nearest feeder otherwise. 710,145 blocks against 7,298 feeders — 379,420 (53%) by
+   intersection, 330,725 by nearest.
+3. **Feeder → substation.** PG&E `FeederDetail.Substation` by name (99% resolved); SCE by
+   *geometry*, snapping published substation points to model nodes within 2 km (95%
+   resolved). SCE names a yard "Universal 69/12 kV" where HIFLD says "Universal City", so
+   name matching alone left 29,889 SCE blocks unresolved.
+
+**Weight fallbacks, so no demand is dropped.** LODES records jobs only at workplace blocks
+(259k of 710k), and 811 TAZs holding 14.8% of statewide EV energy had no recorded jobs. A
+zero there means "no jobs data", not "no charging". Work weight falls back to population,
+then to equal split; home weight falls back to equal split. All 5,423 mapped TAZs sum to
+exactly 1 on both weights.
+
+**Territory mask.** Only PG&E and SCE publish feeders, so a nearest-feeder rule outside
+their territories hands LADWP, BANC, IID and SDG&E demand to an IOU substation hundreds of
+kilometres away. Measured when this was missing: IID's assigned peak fell to zero and SCE's
+rose to 36.7 GW against a real ~24 GW. Assignments are therefore masked to the assigning
+utility's CEC service territory; 190,139 cross-territory assignments were dropped.
+
+Output: 10,010 TAZ–substation pairs over 3,951 TAZs and 1,227 substations. The remaining
+1,503 TAZs — SDG&E and the publicly owned utilities — fall back to k-nearest.
+
+### 4.2 Base (non-EV) load
+
+Measured county hourly demand (NREL OEDI 8562), split within county by census-block
+population, aggregated to substations. 2019: 274.9 TWh statewide, 56.77 GW peak on
+4 September 15:00.
+
+**Timezone.** The NREL hourly axis is UTC carried without a tz label. Used raw it shifts all
+demand 7–8 hours: raw California demand troughs at index hour 11 and peaks at 22, against a
+real system that troughs at 03–05 and peaks at 17–19 local. Against PG&E's measured
+substation profiles, raw correlates at **r = 0.44** with peak hour 2; converted to
+`America/Los_Angeles` it correlates at **r = 0.80** with peak hour 18 and trough hour 3,
+both matching the measurement exactly.
+
+**Measured substitution.** Following Li & Jenn, base load is *not* allocated where a utility
+publishes it. 895 substations use published month-hour profiles directly — 366 PG&E (kW) and
+529 SCE (**amperes**, converted with each substation's published secondary voltage, verified
+by inverting `MVA = A × kV × √3` and recovering 2.40→2.4, 4.16→4.3, 12→15.5, 16→22.2). Only
+the residual, BA total minus measured, is allocated across the rest, so BA hourly totals are
+preserved exactly.
+
+This matters because allocated and published quantities should never be summed and compared.
+Our chain gets the California total right to 2% but individual substations wrong by a factor
+of ten either way (p10 0.10×, p90 1.88× against measured). After substitution that spread
+collapses to p10 1.01×, p90 1.17×, where everything above 1.0 is EV added on top.
+
+---
+
+## 5. Balancing-area assignment
+
+`substation_id → parent_ba` comes from grid data, by precedence:
+
+1. the substation's own `Owner` (HIFLD), or PG&E for GRIP substations — **3,210 of 5,146**
+2. the CEC load-serving-entity territory polygon containing it — **1,589**
+3. the nearest CEC territory polygon — **347**
+4. nearest BA centroid — **0**
+
+This replaces a majority vote over the TAZs that k-nearest happened to attach to a
+substation. That vote failed for bulk hubs, which serve no local load: Tesla, a 500 kV PG&E
+switching hub, was assigned to `WEC_BANC` by a single TAZ 5.4 km away that ranked it 4th of
+4. Measured against `Owner`, PG&E substations were wrong 66% of the time. The new assignment
+moves 245 substations (8%) and 3.1 GW.
+
+---
+
+## 6. BA gateways
+
+Every substation touching a ≥230 kV line gateways to its parent BA, sized from **incident
+circuit capacity not already represented as a modelled corridor**. Components with no such
+line get one gateway sized to their own peak demand and local generation, with no headroom
+multiplier — a radial feed cannot carry more than the load it serves.
+
+Sizing off *total* incident capacity counts each line twice, once as the corridor to its
+neighbour and again as a radial tie to the BA bus, and the BA node has no internal limit.
+That produced 372 GW of gateway capacity against a 63 GW statewide peak (SDG&E: 45 GW
+against 5.4 GW), letting flow hop substation → BA bus → substation around any corridor.
+
+Named interties use published WECC path ratings: Path 66/COI 4,800 MW, Path 15 5,400 MW
+split across Los Banos and Midway, Path 26 4,000 MW, Palo Verde–Devers 2,800 MW.
+
+**Substation transformer limits are modelled.** `Region` constrains net import (imports
+minus exports) to the step-down rating each step, so a switching station passing power
+through at transmission voltage is unaffected and only energy actually stepped down to local
+load crosses the transformer. Ratings come from published bank data where available (1,215
+substations: PG&E bank ratings, SCE GNA/ICA) and are otherwise derived from assigned peak.
+
+This is not a marginal constraint: PG&E's published bank loadings run at a median 85.6% of
+rating, 41% above 90% and 19% already above 100%. Without it the model can only find
+congestion on transmission lines, which have far more headroom, and would attribute EV
+impacts to the wrong asset class.
+
+---
+
+## 7. Corrections not yet reflected in results
+
+Every scenario table produced so far predates all of the following:
+
+- nodal energy balance skipped at demand-only nodes (2,641 of 3,060 nodes, 32% of demand)
+- EV baseline folded into base load, making S0 and S1 serve identical demand
+- NREL base load shifted 7–8 hours by the timezone bug
+- base load allocated at substations where the utility publishes it
+- feeder assignment unmasked by service territory
+- CA-internal BA-to-BA bypass edges
+- gateway capacity oversized ~6×
+- TAZ allocation by distance rather than feeder
+- BA assignment by TAZ vote
+- clique contraction producing phantom 500 km corridors
+
+---
+
+## 8. Known gaps
+
+| Gap | Size | Status |
+|---|---|---|
+| SCE substation load-profile units | — | resolved: amperes, not power |
+| SDG&E feeder and ICA data | 138 nodes, 4.5 GW (7% of peak) | no public endpoint found; request drafted |
+| POU data (BANC, LADWP, IID) | 347 nodes, 5.0 GW (8%) | no ICA exists — outside CPUC jurisdiction |
+| HIFLD `SUB_1`/`SUB_2` topology | ≥100 kV tier | in use |
+| Sub-transmission topology (33–99 kV) | 1,302 nodes, 25 GW | geometry only, no from/to attributes |
+| Isolated nodes | 0 | closed by 342 tagged synthetic feeds |
+| **S1 will not solve** | — | **two timeouts; blocks `P_cong`** |
+| Chronological 8760 from ICA | — | ICA is 288 month-hour bins |
+| Dual extraction | — | quadratic rebuild in `region.py::solution()` |
+
+**Structural proxies for POU load do not work.** Tested against 367 PG&E substations with
+measured peak: catchment population scores best (log-log r = +0.61, share error 0.27), while
+every structural proxy is at or worse than an equal split (incident line capacity 0.51,
+corridor count 0.40, equal split 0.40). Population catchment — what k-nearest approximates —
+is the recommended fallback.
+
+---
+
+## 9. Scenarios
+
+| Scenario | Description |
+|---|---|
+| S0 | Nested substations, base load only, no EV |
+| S1 | EV at substations, rated NTC, no new BESS |
+| S2 | S1 plus endogenous BESS |
+| S3 | EV at substations, relaxed (10×) CA NTC and BA interfaces |
+
+```
+P_cong  = (E_S1 − E_S0) − (E_S3 − E_S0)
+M_BESS  = (E_S1 − E_S0) − (E_S2 − E_S0)
+```
+
+---
+
+## 10. Pipeline
+
+| Script | Purpose |
+|---|---|
+| `08_00_county_base_load.py` | NREL county demand → TAZ base load (UTC→Pacific) |
+| `08_01_map_taz_to_substation.py` | k-nearest fallback mapping |
+| `08_02_map_block_to_feeder.py` | TAZ → block → feeder → substation |
+| `08_03_aggregate_ev_load_at_substations.py` | substation hourly loads |
+| `08_04_fetch_ica_data.py` | SCE DRPEP ICA and GNA acquisition |
+| `08_05_assign_substation_ba.py` | substation → BA from ownership and territory |
+| `09_01_build_ca_meso_grid.py` | corridor reconstruction, gateways, network JSON |
+| `09_02_nest_meso_in_good.py` | nest CA network inside WECC graph |
+| `10_01_run_scenarios_S0_S3.py` | scenario solves |
+| `10_05_plot_network_map.py` | network map (PNG + interactive HTML) |
+
+Reference: `R_Yanning/` holds Li & Jenn's published pipeline.
+
+---
+
+## 11. Solver
+
+Gurobi via `gurobi_direct`, barrier with crossover on.
+
+### June-week results (22 September 2026)
+
+| | S0 (no EV) | S3 (EV, relaxed delivery) |
+|---|---:|---:|
+| objective | 3.012e9 | 1.281e9 |
+| CO2 | 5.555e9 kg | 5.612e9 kg |
+| shortfall | 285.2 GWh | 111.9 GWh |
+| wastage | 845.9 GWh | 382.3 GWh |
+| binding line-hours | 42,097 | 5,534 |
+| solve time | 100 min | 159 min |
+
+Relaxing delivery cuts binding line-hours by 87% and shortfall by 61%, which
+confirms the transmission constraints in S0 actually bind. **S1 is missing**,
+so `P_cong` is not yet computable. S0 and S3 differ in two ways at once (EV
+load *and* delivery limits), so the pair alone cannot separate the two.
+
+S0's 285.2 GWh shortfall is a floor present before any EV load: it sits on
+the 139 allocated-base substations that exceed their transformer rating, and
+those are concentrated where no utility publishes a profile.
+
+### PG&E-only framework test (23 September 2026)
+
+Nesting only `WEC_CALN` at substation level and leaving the rest of California
+as copper plates gives 916 nodes and 2,792 edges against 3,060/9,556, roughly a
+fifth the LP rows. It also has **zero** under-supplied substations, because all
+21 in the full model are SCE or SDG&E. S1 solved in 19.5 minutes here after
+failing twice on the full model at 2 h and 4 h.
+
+| | S0 (no EV) | S1 (EV, constrained) | S3 (EV, relaxed) |
+|---|---:|---:|---:|
+| objective | 8.886e8 | 1.030e9 | 8.706e8 |
+| CO2 | 4.888e9 kg | 5.053e9 kg | 4.636e9 kg |
+| shortfall | 75.3 GWh | 89.1 GWh | 74.2 GWh |
+| wastage | 543.1 GWh | 542.7 GWh | 180.0 GWh |
+| binding line-hours | 11,303 | 11,989 | 3,134 |
+
+```
+E_S1 - E_S0 = +165,100 t CO2     EV under constrained delivery
+E_S3 - E_S0 = -252,300 t CO2     EV under relaxed delivery
+P_cong      = +417,400 t CO2     one week, PG&E only
+```
+
+`P_cong` is positive, as the hypothesis requires. Three independent signals move
+together when delivery is relaxed and none was imposed: binding line-hours fall
+74%, wastage falls 67%, and CO2 drops *below* the no-EV baseline -- the same
+charging demand absorbs renewable output that constrained delivery had spilled.
+
+**This is a lower bound and a framework test, not a headline number.**
+Copper-plating the rest of California removes inter-BA congestion, and PG&E has
+the most in-area hydro and renewables of any California BA.
+
+Two results are still missing. **S2 timed out**, so `M_BESS` is unavailable;
+endogenous storage couples hours together and crossover handles that far worse
+than the purely spatial problem in S0/S1/S3. **Invariant B4 is untested**:
+`P_cong > 0` is necessary but not sufficient, and the falsification test is
+whether it approaches zero as capacity scales up. S0 also still carries
+75.3 GWh of shortfall on PG&E's own under-supplied nodes, so invariant B2 is
+not satisfied and some shortfall in every scenario is structural.
+
+## 0. Provenance, fixes, deficits and limitations
+
+One place to see what is measured, what is assumed, and what is missing. Written
+so a reader can tell which numbers rest on published data and which rest on a
+choice we made.
+
+### 0.1 Data sources
+
+| what | source | used for |
+|---|---|---|
+| PG&E substations, feeders, transmission lines | GRIP `EDSubstations`, `FeederDetail`, `TransmissionLines` (`data/GRIP_SHP`) | node set, corridor geometry, bank counts |
+| PG&E measured substation load | GRIP `SubstationLoadProfile` (`high` band, 288 month-hours, 639 substations) | base load, and the baseload half of the capacity identity |
+| PG&E bank ratings | GRIP `DFSubstationArea___PeakFacilityLoadingPercent` (1,236 banks, 694 substations) | fallback transformer rating; **not trustworthy, see 0.3** |
+| PG&E ICA detailed results | `grip.pge.com` via the `PresignedURLPROD` feature service; 20 division ZIPs, 12 GB, 2,979 load-side feeders (`08_11`) | headroom half of the capacity identity |
+| SCE ICA / GNA | DRPEP ArcGIS (`08_04`) | SCE substation ratings, load profiles |
+| Substations, transmission lines (national) | HIFLD (4,442 CA substations; 2,171 CA lines with named endpoints) | non-PG&E nodes, line terminals, **plant switchyards** |
+| Power infrastructure (crowd-sourced) | OpenStreetMap via osmium (3,981 substations, 43,841 lines) | corridor confirmation, shared-node chaining |
+| Balancing areas, utility territories | CEC GeoPackages | BA assignment, territory masking |
+| WECC generators, profiles, **emission factors** | `Examples/WEC_modified.json` | generation, dispatch, per-asset `co2` |
+| County electricity demand | NREL | validation of the allocated base load |
+| Travel demand, EV charging | CSTDM TAZ, Li & Jenn charging model | EV load |
+| Census blocks | US Census | TAZ -> block -> feeder -> substation chain |
+
+### 0.2 Artificial fixes and assumptions
+
+Ordered by how much they could move a result.
+
+| assumption | value | why it exists | risk |
+|---|---|---|---|
+| ICA line sections -> feeder | **max** across sections | headroom at a section includes upstream impedance, so the section nearest the substation is the bank-relevant one. Min gave 2.8% headroom against GNA's ~20%; max gives 46%; median gives 14% | **high** -- the choice moves overloaded PG&E nodes between 19 and 246. Median is best cross-validated; max is in use. `--section-agg` switches it |
+| `TYPICAL_LOADING` | 0.856 | divides assigned peak to derive a rating where nothing is published (1,883 nodes) | **high** -- it is the median of the *maximum* bank loading per substation, used as if it described a substation. The substation-level figure is **0.79**. Not yet corrected |
+| generation switchyard rule | plant >= 100 MW, within 2 km, highest voltage wins | plants have their own switchyards and serve no load, so the TAZ test dropped them | medium -- fixes the two dominant cases; 19 of 42 plants >= 300 MW still land below 230 kV |
+| nuclear dispatch | forced to 100% of nameplate every hour | `dispatchable=False` applies both a max and a must-run min | medium -- correct as baseload, but it makes curtailment entirely a function of corridor adequacy |
+| transmission operating cost | 0.36 $/MWh per corridor | without it a corridor pair is a flat direction and energy cycles A->B->A for free; measured 293 TWh of gross flow against 40 TWh of generation | low -- necessary, and small against gas at ~38 $/MWh |
+| `MIN_RATING_W` | 5 MW | floor so a near-zero-load node still has a usable interface | low -- but 165 of 211 derived PG&E ratings sit *on* this floor |
+| synthetic feeds | 5 MW, 342 nodes | otherwise isolated nodes shed all their load | low-medium -- fabricated capacity, flagged in output |
+| zero-load divide guard | 1 W, 1,611 assets | `profile = profile_W / cap` needs `cap > 0` | low -- presolve removes them |
+| BESS capex / duration / efficiency | 2.1 $/W, 4 h, 0.90 | -- | low for the as-built runs, where capex is not charged at all |
+| `EV_HOME_SHARE` | 0.68 | split of charging to home | medium, untested here |
+| corridor snapping | 1,500 m substation, 400 m hub precedence, 250 m split | reconstruct corridors from line geometry | medium -- MST contraction replaced clique after a 499 km spurious corridor |
+| solver | `ScaleFlag=1`, `BarConvTol` 1e-7, `OptimalityTol` 1e-5 | ScaleFlag=2 made the 672 h LP unsolvable | low -- but see the 0.10% noise floor |
+
+### 0.3 Data deficits
+
+| deficit | scale | consequence |
+|---|---|---|
+| PG&E bank ratings contradict PG&E's own load data | substation 02201 sums to 9.88 MVA against a published 118.9 MW peak | the bank layer is a Grid Needs Assessment keyed on `gnaneedid`, not an asset inventory. Demoted to a fallback behind the ICA identity |
+| substations with ICA but no measured baseload | 65, incl. SF K and SF L | the identity needs both halves; these fall back to bank sums. ~14 GWh of S0 shortfall |
+| nodes with no PG&E identity at all | `HIFLD_*`, ~40 GWh of S0 shortfall | rating is `peak / 0.856`, i.e. invented. The largest single component of residual S0 shortfall |
+| coal emission factor | one shared value, 250 g/kWh | real coal is 900-1,000 g/kWh. A fuel-level placeholder, not per-unit data. `ASTR_COAL_CO2` overrides; left unchanged so results trace to the input |
+| fossil generators with no `co2` | 43 | fall back to their own fuel's median from the same file; volume printed at runtime |
+| HIFLD `Max_Voltag` unreliable | Midway and Gates, both 500 kV Path 15 terminals, are tagged 0 | a voltage filter rejects correct high-voltage endpoints. Why the switchyard rule cannot be tightened further |
+| The Geysers under-connected | 776 MW on 405 MW of corridor | real field splits across Fulton and Lakeville (230 kV) and Eagle Rock (115 kV); we model one tap |
+| SDG&E ICA | not acquired | SDG&E ratings are derived only. Request email drafted, not sent |
+| no distribution layer | -- | Li & Jenn's binding constraint is feeder thermal/voltage on 5,582 feeders. We cannot represent it, and deliberately discard it in the ICA aggregation |
+
+### 0.4 Limitations
+
+| limitation | effect on results |
+|---|---|
+| **PG&E only**; rest of WECC copper-plated | every congestion number is a **lower bound**. No intra-SCE or inter-BA congestion is visible. Li & Jenn find PG&E worst in *magnitude* but SCE widest in *extent*, so scope omits the broader problem |
+| **NTC pipe-flow**, not angle-based DC OPF | no loop flow or Kirchhoff voltage law, so reported congestion is a **lower bound** |
+| **current EV adoption only** | `P_cong` is indistinguishable from zero. Li & Jenn's own counts put overload at 14% of feeders in 2022 and 80% by 2045, so this is expected rather than a null result |
+| **four seasonal weeks**, not 8760 h | VRE share 5.95% against the annual 6.01%, so the sample is representative. Required by the RPS, which is a budget over the solve horizon |
+| **as-built** (`--no-capex`) | no investment can mask a shortage. Matches Li & Jenn's frozen-grid design, but means results are not a forecast |
+| **0.10% solver noise floor** (~6,770 t) | any CO2 difference below this is not interpretable. `P_cong` and `M_BESS` both sit at or under it |
+| emission factors are CO2, not CO2e | `ch4` and `n2o` are on the assets and not counted |
+| RPS has no compliance valve | `non_compliance_capacity` is unset so the RPS is hard. This is why the horizon cannot be decomposed by time |
+
+### Results: corrected plant topology + per-generator emission factors (27 September 2026)
+
+Supersedes every earlier result in this document. Two corrections landed together
+and both move the headline numbers by more than a factor of two, so nothing
+above this line should be quoted.
+
+**Correction 1: generation switchyards.** `09_01::generation_switchyards` now
+keeps a substation as a node when a large plant sits on it, regardless of load.
+Previously Diablo Canyon's 2,240 MW was snapped 15.9 km to FOOTHILL, a 12 kV
+distribution substation with 300 MW of corridor, and The Geysers' 926 MW to
+MIDDLETOWN, 12 kV, 13.6 MW. Verified against the NRC filing and CPUC documents:
+Diablo Canyon has its own 230 kV and 500 kV switchyards and five lines (Morro
+Bay and Mesa at 230 kV, Midway x2 and Gates at 500 kV), and HIFLD's own line
+layer records exactly those five. It now sits on its own 500 kV switchyard with
+**10,300 MW** of corridor. Curtailment fell **2,072.6 -> 163.3 GWh (-92%)**.
+
+**Correction 2: per-generator emission factors.** `_emissions_kg` now uses each
+asset's published `co2` (kg/J electricity) instead of fuel-level constants that
+were 1.9x (gas) to 22x (biomass) too high. Total emissions fall to 31% of the
+previous values and the consequential EV factor from 771 to 410 g/kWh.
+
+PG&E only (`--only-ba WEC_CALN`), 946 substations nested, 672 h, `--no-capex`.
+
+| | lines | interfaces | transformers | EV | BESS | CO2 Mt | shortfall | wastage | generation | BESS cycling | dispatched |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| S0 | x1 | x1 | published | off | -- | 6.5194 | 74.65 | 164.5 | 59,244 | -- | -- |
+| S0R | x10 | x10 | published | off | -- | 6.4894 | 19.94 | 92.2 | 59,205 | -- | -- |
+| S1 | x1 | x1 | published | on | -- | 6.7698 | 91.02 | 163.3 | 59,912 | -- | -- |
+| S2 | x1 | x1 | published | on | 509 MW / 2,035 MWh | 6.7607 | 91.18 | 112.5 | 60,030 | 6/6 | 144.11 GWh |
+| S3 | x10 | x10 | published | on | -- | 6.7413 | 30.13 | 92.1 | 59,906 | -- | -- |
+| S4 | x10 | x10 | **x10** | on | -- | 6.7538 | 4.20 | 92.1 | 59,948 | -- | -- |
+
+Shortfall and wastage in GWh; generation in GWh over the 672 h.
+
+**Consequential EV emission factor** (dCO2 / EV energy delivered, where
+delivered = 626.8 GWh demanded minus that scenario's incremental shortfall):
+
+| comparison | dCO2 | delivered | EF |
+|---|---|---|---|
+| S1 - S0, constrained | 250,403 t | 610.4 GWh | **410 g/kWh** |
+| S3 - S0R, lines relaxed | 251,861 t | 616.6 GWh | 408 g/kWh |
+| S4 - S0R, all relaxed | 264,365 t | 642.5 GWh | 411 g/kWh |
+
+Marginal generation is gas throughout (+692 GWh S1-S0; coal *falls* 28 GWh), so
+410 g/kWh is the gas fleet's own factor. The factor being flat across
+transmission regimes is the finding: relaxing transmission changes how much EV
+energy is delivered, not what generates it.
+
+**Derived metrics, with the noise floor stated:**
+
+```
+P_cong (S1-S0)-(S3-S0R) =  -1,458 t     <- indistinguishable from zero
+M_BESS (S1-S2)          =   9,173 t     <- barely above the floor
+noise floor (0.10% of 6.8 Mt) ~ 6,770 t
+```
+
+The 0.10% floor is the spread measured across solver configurations that all
+reported "optimal" (see the parameter sweep section).
+
+**At current EV adoption, congestion in PG&E imposes no measurable carbon
+penalty.** That is consistent with Li & Jenn, whose own counts give 795 of 5,582
+feeders overloaded in 2022 (14%) rising to 4,452 (80%) by 2045. Our 16.4 GWh of
+626.8 GWh EV energy undeliverable (2.6%) is the same story one tier up. The
+congestion signal is a 2030s-2040s phenomenon, so the obvious next test is EV
+adoption scaling rather than more model refinement.
+
+**Storage works but not on carbon.** S2's 6 batteries all cycled ~71 times and
+moved 144 GWh, cutting curtailment 31% (163.3 -> 112.5 GWh) while leaving
+shortfall unchanged. Storage absorbs spilled zero-carbon energy, loses 10% to
+round-trip efficiency, and the replacement is gas. Real curtailment benefit,
+negligible carbon benefit. Note this is the third fleet tested: sizing to EV
+peak gave 0.85 cycles, sizing to deficit gave 0.08, sizing to curtailment gave
+70.8. Placement, not scale, was always the binding issue.
+
+### Why storage does nothing here, and where it would (26 September 2026)
+
+S2's batteries were tested three ways and none of them moved the result. The
+reason is physical, not economic, and it took a deliberate experiment to find.
+
+| fleet | sites | discharged | energy | cycles | CO2 saving |
+|---|---|---|---|---:|---|
+| endogenous (optimiser free to build) | 786 avail. | -- | -- | -- | built only 66 MW |
+| prescribed by EV peak, 1,163 MW / 4,652 MWh | 786 | 11 (1%) | 3.97 GWh | 0.85 | 315-502 t |
+| prescribed by deficit, 1,069 MW / 6,892 MWh | 115 | 2 (2%) | 0.53 GWh | 0.08 | -1,000 t |
+
+Every saving is inside the 0.10% objective spread measured across solver
+configurations, so none is distinguishable from zero.
+
+**The batteries were free.** Under `--no-capex` the capex variable is bounded to
+zero and `make_store_asset` sets no operating cost, so `Store.objective` charges
+nothing for either building or running them. An LP will take free arbitrage if
+any exists. It declined, which means the constraint is not price.
+
+**Storage cannot relieve a delivery constraint, because it needs that
+constraint to charge.** A battery must charge before it discharges, and charging
+means importing *more* through the path that is already capped. A substation
+importing at its limit has no spare hour to fill a battery. The per-node deficit
+shape (`shortfall_by_node.csv`, written by `10_01::_shortfall_by_node`) shows
+how absolute this is in S0: the five largest deficits are short in **672 of 672
+hours**, so no battery of any size at any price helps them. Median longest
+contiguous deficit run in S0 is 91 h.
+
+**EV load is what makes storage viable at all**, because EV charging is peaky
+where base-load delivery failure is permanent. Adding EV load moves the median
+longest deficit run from 91 h to 5 h. Of 97.6 GWh of deficit at ICA-rated nodes,
+5,826 MWh sits in runs of 8 h or less and 35,515 MWh in longer runs -- so even
+perfectly placed storage reaches about a seventh of the deficit energy. That
+ceiling is physical.
+
+**Sizing to the deficit was worse than sizing to EV peak, and the reason is the
+finding.** The batteries that actually cycled were at nodes with *no deficit*:
+SUB_18295 (2,240 MW nuclear, 1,301 GWh curtailed) and SUB_04314 (926 MW
+geothermal, 608 GWh curtailed). They were absorbing stranded must-run
+generation. Deficit-sizing deleted batteries from exactly those nodes because
+they have no shortfall to size against. **Storage's value in this system is at
+the surplus end, not the deficit end.**
+
+So the sizing recommendation is by curtailment, not deficit, and an order of
+magnitude larger than anything tested: SUB_18295 and SUB_04314 spill 1,909 GWh
+between them, 92% of all curtailment, at roughly 1,900 MW sustained. Both tested
+fleets absorb 4.7 GWh per cycle against 2,072 GWh spilled -- about 500x too
+small. Useful storage here is GW-scale at two sites, not MW-scale at hundreds.
+
+This also bounds a storage-versus-transmission comparison. The 161 GWh of
+corridor-attributable shortfall is not addressable by storage at any price, so
+the two are not substitutes for the same problem: wires fix delivery, storage
+fixes curtailment, and in this system those sit at opposite ends. The comparison
+that *is* meaningful is narrower -- upgrading the corridors out of
+SUB_18295/SUB_04314 against storing their output on site, both aimed at the same
+1,909 GWh. Note transmission `capex_cost` is 0 throughout `09_02`, so that
+comparison needs a corridor cost basis the model does not currently carry.
+
+### As-built four-week results, all four certified (25 September 2026)
+
+First set where every scenario reaches a **certified** optimum on the 672 h
+horizon, after `ScaleFlag=1` (see below). PG&E nested, rest of California copper
+plate, `--no-capex` so no investment can mask a shortage. Total solve time 2.1 h
+for all four, against three prior 4 h attempts that certified nothing.
+
+| | S0 (no EV) | S1 (EV, constrained) | S2 (EV + BESS) | S3 (EV, relaxed) |
+|---|---:|---:|---:|---:|
+| objective | 1.969748e9 | 2.706243e9 | 2.699162e9 | 1.446984e9 |
+| CO2 | 23.0023 Mt | 24.5820 Mt | 24.5815 Mt | 22.0259 Mt |
+| shortfall | 128.64 GWh | 196.50 GWh | 195.79 GWh | 79.57 GWh |
+| wastage | 2074.1 GWh | 2072.6 GWh | 2071.1 GWh | 618.4 GWh |
+| solve | 1,146 s | 680 s | 1,921 s | 3,755 s |
+
+```
+EV carbon cost (S1 - S0) = +1,579,730 t CO2
+EV unserved  (S1 - S0)   =      67.86 GWh = 10.8% of the ~627 GWh of EV demand
+M_BESS       (S1 - S2)   =        502 t CO2  <- within solver noise
+P_cong       (S1 - S3)   = +2,556,107 t CO2  <- CONTAMINATED, needs S0R
+```
+
+**Forbidding investment multiplies the congestion signal sixfold.** With CAPEX
+enabled the same comparison gave only 10.9 GWh of EV-induced shortfall, because
+the optimiser simply built 1.27 GW more storage for S1 than for S0. The as-built
+framing is what exposes the delivery constraint.
+
+**Distributed storage does nothing measurable here.** S2 prescribes 1,163 MW
+across 786 substations -- 17.6x what the optimiser chose to build when free --
+and it relieves 0.71 GWh of the 67.86 GWh EV shortfall, about 1%. The resulting
+502 t sits inside the 0.10% objective spread measured across solver
+configurations, so it cannot be distinguished from zero. The mechanism is
+visible in the wastage column: it barely moves between S0 and S1 (2074.1 ->
+2072.6 GWh), so there is no surplus for a battery to time-shift. EV shortfall
+here is a *delivery* problem, not a timing one, and storage downstream of a
+constrained transformer cannot relieve a constraint upstream of it.
+
+`P_cong` remains the contaminated form. S3's wastage collapses from 2072.6 to
+618.4 GWh, which is overwhelmingly recovered base-load curtailment rather than
+anything EV-related, so the figure still charges EVs for a relaxation that
+benefits all load. `S0R` (relaxed transmission, no EV) is implemented in `10_01`
+and closes this.
+
+### What the solver taught us, expensively
+
+**Crossover is 98% of the runtime and is where the model fails.** On the S1
+attempt that ran four hours, barrier took 258 s and crossover consumed the
+remaining 14,140 s without finishing.
+
+**`NumericFocus=2` is what rescued S3.** Its barrier hit the 1,000-iteration
+limit without reaching `BarConvTol`, and crossover still recovered to
+`Optimal` from that starting point. S1 has only ever run with
+`NumericFocus=1` and has failed twice, at 2 h and at 4 h.
+
+**More time does not fix S1.** Doubling its budget bought ~100 extra minutes
+of grinding and ended at dual infeasibility 128, no better than the 34.6 it
+reached on the shorter run. The signature throughout is dual infeasibility
+oscillating over orders of magnitude rather than descending, which is
+conditioning rather than slowness. The coefficient spread is the suspect:
+shortfall 2.78e-6 $/J against wastage 2.78e-10 is a 1e4 ratio, and
+capacities span 1e6 to 1e10 W.
+
+**Crossover cannot be skipped for dispatch.** On this S0, barrier terminated
+sub-optimal at 3.0575e9 and crossover corrected it to 3.0118e9, a 1.5%
+objective gap. Earlier measurement put the crossover=0 CO2 delta at 147 kt
+against 329 kt with crossover, plus 1.2 TWh of phantom generation. This is why
+stage 2 keeps crossover on: the energy and emissions totals the study reports
+come from stage 2, and an interior point misstates them. Stage 1 skips
+crossover because it reads out capacity only, never dispatch, and a few parts
+in ten thousand of objective gap does not move a sizing decision.
+
+### Do not decompose the horizon by time
+
+**The concatenated four-week horizon is a requirement of the policy layer, not a
+sampling convenience.** `Portfolio_Standard`
+(`good/optimization/policies/portfolio_standard.py`) sums generation over
+whatever horizon is solved, and `Examples/policies.json` leaves
+`non_compliance_capacity` unset, so it defaults to 0 and the escape variable is
+clamped. The RPS is therefore a hard constraint over the solve window. Because
+wind and solar are non-dispatchable with fixed profiles, the renewable term is
+a constant rather than a variable, so the RPS acts as a ceiling on all other
+generation, roughly `other <= renewable * (1 - ratio) / ratio`.
+
+Splitting 672 h into four independent 168 h solves converts one seasonal
+renewable budget into four weekly ones, and a weak-renewable week can no longer
+borrow from a strong one. Measured on identical data and capacity:
+
+| S0 shortfall | four weeks jointly | sum of four weekly solves |
+|---|---|---|
+| total | **128.5 GWh** | **2,945.7 GWh** |
+| worst node | CA substation SUB_02201, 53.0 GWh | WECC_AZ, 580.9 GWh |
+
+The weekly split manufactures a multi-gigawatt Arizona shortfall that does not
+exist on the proper horizon, and drives the September EV carbon cost to
+-5,061 t (the system saturates, so added EV load becomes shortfall rather than
+generation). Arizona's VRE share of its own load is 6.01% annually and the four
+seasonal weeks reproduce that at 5.95%, but individual weeks range from 8.40%
+(June) to 3.99% (December) -- the four-week sample is representative and single
+weeks are not.
+
+Two related facts worth knowing when reading this model: renewables carry
+`_class: Load` with positive `installed_capacity` in every balancing area,
+which is the injection sign convention and not a data error; and the RPS forces
+Arizona to import ~3.2 GW on average, which fits comfortably inside its ~11.2 GW
+of intertie capacity on a representative window but not on a stressed week.
+
+### Two-stage solve (superseded -- kept for the record)
+
+The two-stage split below was implemented and then abandoned for the reason
+above: its stage 2 dispatched each week independently, which is exactly the
+decomposition the RPS forbids. `--stage1-capex-out` and `--fix-capex-from`
+remain in `10_01` and are correct as CAPEX plumbing, but stage 2 must not be run
+on `--horizon weekly` while ratio policies are active.
+
+The 672 h four-week LP does not solve in one pass. Its barrier stalls: primal
+residual plateaus at 1.09e4 and complementarity at ~1.4e-1 for its last 15
+iterations, terminating sub-optimal at 347 s. Crossover then ran 2,265,777
+iterations in 14,400 s without converging, its objective still at 7.28e9 and
+falling against a true optimum near 2.16e9. Crossover cost grows superlinearly
+in model size: one week is 314k presolved rows and pushes to a vertex in
+~1,180 s, while four weeks is 1.25M rows.
+
+The horizon is therefore split by *decision type* rather than by time:
+
+**Stage 1 (sizing).** All four weeks in one LP, `Crossover=0`,
+`BarConvTol=1e-4` via `ASTR_BARCONVTOL`. At a tolerance the model can meet,
+barrier terminates `Optimal` in 81-196 iterations and 123-852 s per scenario --
+33 min for all four, against a single-stage S0 that failed after 4 h. Only the
+capacity decisions are read out, per scenario, to `stage1_capex_<tag>.json`.
+
+**Stage 2 (dispatch).** Each seasonal week separately, `Crossover=1` and the
+tight default tolerances, with every extensible asset held at stage 1's build.
+
+Capacity stays co-optimised across all four seasons, which is the reason the
+concatenated horizon exists. Only dispatch is separated -- and the claim
+originally made here, that dispatch is separable because the weeks are
+non-contiguous and carry no storage state between them, **was wrong**. Storage
+state is not the only thing coupling the weeks: the RPS is a budget over the
+solve horizon, so separating the weeks tightens it into four weekly budgets.
+See "Do not decompose the horizon by time" above for the measured cost.
+
+Two implementation points that are easy to get wrong, both caught by
+`10_01`'s unit-tested helpers:
+
+* `ev_charging_project.utils.extract_capex_expansion` matches only handles
+  beginning `optional_`, but S2's substation batteries are named `bess_<hub>`.
+  Reusing it records 16 of S2's 802 extensible assets and lets each week
+  re-decide the other 786. `_extract_capex_decisions` keys on `extensible`
+  instead.
+* The record must be **absolute built capacity**, not the solved `capex`
+  delta. S1-S3 run with `_apply_capex_floor_nlg` having already folded S0's
+  build into `installed_capacity`, so their `capex` is only the increment above
+  S0, while stage 2 rebuilds from the unflooded base. Storing deltas made S0
+  report 7,220 MW of storage and S1 report 1,261 MW -- S1 apparently building
+  less than S0 despite serving strictly more load. Absolute totals mean the
+  same number whichever baseline produced them.
+
+**Cost of the approximation.** Stage 2 cannot re-optimise capacity against the
+dispatch it finds, so reported objectives are an upper bound on the true
+single-shot optimum: a feasible build, dispatched optimally. The gap is bounded
+by stage 1's sizing tolerance (~3e-4 relative), far below the inter-scenario
+differences this study reports.
+
+**Accounting.** CO2, shortfall, wastage and generation are extensive in time
+and sum over the four weeks. The objective does not: stage 1's CAPEX is an
+annual charge incurred once while each stage-2 week carries only operating
+cost, so `10_08_aggregate_two_stage.py` sums operating cost and keeps CAPEX
+separate rather than counting it four times.
+
+### As-built dispatch (`--no-capex`)
+
+Closes every CAPEX decision so no new capacity can be built, to ask what the
+grid as it stands does with the demand. Every extensible asset in WEC.json
+carries `installed_capacity = 0` and unlimited `capex_capacity`, so this removes
+all 799 of them -- within the WEC_CALN restriction, the 16 BA-level
+`optional_storage_*` (the 783 optional solar/wind are already closed upstream by
+`_disable_solar_wind_capex`). What survives is the genuinely installed fleet:
+4.22 GW of pumped hydro, 0.60 GW of battery, and all real generation.
+
+S2's substation batteries are pure CAPEX too (`installed_capacity = 0`,
+everything in `capex_capacity`), so a blanket switch-off would make S2
+byte-identical to S1 and force M_BESS to zero by construction. `--no-capex`
+therefore moves their per-site cap into `installed_capacity`, giving a fleet
+fixed exogenously by `09_01::candidate_bess` (half the substation's mean EV
+peak, 1 MW floor). M_BESS then measures the value of a prescribed fleet rather
+than of an optimally-sized one, which is a change in what the metric means.
+
+Removing the 16 optional_storage assets also removes the 16 dense columns the
+barrier log reported -- a capex variable sits in every hour's capacity
+constraint, the classic pathology for Cholesky factorisation. With them gone
+crossover starts working: dual pushes complete immediately and primal pushes
+drain at ~200,000/s, against a CAPEX-enabled run where crossover never finished
+2.27M iterations in 4 h.
+
+### ScaleFlag=1: what actually made `four_week` solvable
+
+**`ScaleFlag=2` was the cause of the four-week convergence failure.** It had been
+set in the config from the start, on the reasoning that a model with a nine-order
+coefficient spread needs aggressive scaling. It does not: aggressive scaling was
+*creating* the instability. Standard scaling certifies the same model in
+**1,011.9 s** where `ScaleFlag=2` failed to certify in 14,400 s on three separate
+attempts.
+
+672 h, S0, `--no-capex`, identical 2,400 s budget:
+
+| config | certified | objective reached | final dual inf |
+|---|---|---|---|
+| **`ScaleFlag=1`** | **yes, 1,011.9 s** | **1.969024916e9** | **0** |
+| `Quad=1` | no | 1.9964419e9 | 35.9 |
+| `ScaleFlag=3` | no | 1.9752436e9 | 15,933 |
+| `Presolve=1` | no | 2.0026964e9 | 3,398 |
+| `NumericFocus=3` | no | never left barrier (0 simplex iterations) | -- |
+| baseline (`ScaleFlag=2`) | no | 2.0094031e9 | 13,400 |
+
+The certified optimum is 2.0% *below* where the baseline had crawled to after
+four hours, so those runs were never near-converged -- they were 2% away with
+dual infeasibility oscillating over two orders of magnitude. Everything
+previously attributed to intrinsic conditioning (barrier stalling on primal
+residual, crossover needing 4.1M iterations, dual infeasibility reaching 6.18
+then rebounding to 320) was this one parameter.
+
+Two cautions carried out of this. `NumericFocus=3` is unusable at this size: it
+made zero simplex iterations in 2,400 s. And Gurobi **appends** to `LogFile`, so
+any tool parsing that file must keep only the segment after the last
+"Optimize a model" or it will attribute the previous run's progress to the
+current one -- which is exactly how `NumericFocus=3` first appeared to match
+`Presolve=1` byte for byte.
+
+### Solver parameter sweep, and why concurrent LP does not help
+
+`10_09_solver_param_sweep.py` times Gurobi configurations on one seasonal week,
+using the `ASTR_GUROBI_PARAMS` env hook in `10_01::_solver_kw`. The motivation
+was that barrier iterations here are cheap (1.23 s each, Factor Ops 5.8e8) while
+the crossover clean-up ran ~4.1M **single-threaded** simplex iterations, so the
+phase consuming 3.5 of 4 hours used one of 14 cores.
+
+June week, S0, `--no-capex`, time to certified optimum:
+
+| config | solve | speedup | objective |
+|---|---|---|---|
+| `Method=3, Aggregate=1` | 325.9 s | 2.89x | 471234294.3 |
+| `Method=3` (concurrent) | 350.4 s | 2.69x | 471107962.3 |
+| `Sifting=2` | 792.6 s | 1.19x | 470987284.5 |
+| `Aggregate=1` | 864.4 s | 1.09x | 471453455.1 |
+| baseline | 941.3 s | 1.00x | 471234287.5 |
+
+**The 2.89x does not carry to 672 h.** At four weeks, concurrent is *worse*:
+barrier takes 1,916 s instead of 1,234 s because 14 cores are split three ways,
+and crossover then starts from further back. At matched wall time the
+non-concurrent run was at 1.9997e9 where concurrent was at 2.0323e9. The
+one-week gain came from a simplex method winning the race outright; at four
+weeks neither simplex finishes, so concurrency only starves barrier. Use the
+default `Method=2` on `four_week`.
+
+Two by-products of the sweep worth keeping. Certified-optimal objectives span
+470987284.5 to 471453455.1 across configurations -- a **0.10% spread** that sets
+a floor on any difference worth interpreting (the EV carbon cost S1-S0 is 2.25%
+of total, comfortably above it). And `Aggregate=0`, long set in the config, is a
+deviation from Gurobi's default of 1 that turns out to buy only 1.09x, so it was
+never the problem it looked like.
+
+### Barrier tolerance: do not loosen it
+
+`BarConvTol` measures the complementarity gap, not primal feasibility, and on
+this model those come apart. At `1e-4` barrier quits at iteration 87 with a
+primal residual of 6.70e6 -- a primal-infeasible point that Gurobi discards,
+leaving crossover to restart primal simplex from scratch (objective 1.46e8,
+primal infeasibility 2.44e15). At the `1e-7` default it runs its full 1,000
+iterations and reaches a primal residual of 1.41e1, six orders of magnitude
+better, which is what lets crossover push properly.
+
+Raising `BarIterLimit` does not help: over iterations 989-1000 the primal
+residual oscillates between 1.4e1 and 1.7e1 with no downward trend. Barrier is
+stalled on primal feasibility, not short of iterations. Its dual bound is also
+unreliable here -- it reported a 5.8e-5 relative gap at 2.0513e9 while crossover
+went on to find 1.9895e9, 3% lower.
+
+The sizing-tolerance exception in the superseded two-stage section applies only
+to a pass that reads out capacity and never dispatch.
+
+### Settings
+
+`TimeLimit` defaults to 4 h (override with `ASTR_TIME_LIMIT_S`), 24 h for the
+8760 horizon. `OptimalityTol` 1e-5, `FeasibilityTol` 1e-6, `BarConvTol` 1e-7,
+`ScaleFlag` **1** (see above -- the 2 that `_solver_kw` still hardcodes is the
+setting that broke `four_week`; pass `ASTR_GUROBI_PARAMS='{"ScaleFlag":1}'` until
+the default is changed), `NumericFocus` 1 (2 for S3). Duals are disabled
+(`extract_duals=False`); enabling them doubled memory and caused a MemoryError
+at 12M variables.
+
+Results carry a `graph_build` fingerprint and `built_at` timestamp so rows
+from an older network cannot be compared silently against a newer one.
+
+Costs (all $/J; 1 MWh = 3.6e9 J): shortfall 10,000 $/MWh, wastage 1 $/MWh,
+transmission operating 0.36 $/MWh. Derivations in
+`cost_calibration_methodology.tex`.

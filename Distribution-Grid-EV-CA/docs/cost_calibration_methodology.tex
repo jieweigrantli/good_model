@@ -1,0 +1,286 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\geometry{margin=1in}
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue, citecolor=blue}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  backgroundcolor=\color{gray!8},
+  columns=fullflexible
+}
+
+\newcommand{\COtwo}{CO\textsubscript{2}}
+
+\title{Calibration of Shortfall, Wastage, and Transmission\\
+Operating Costs in the Nested WECC--California Model}
+\author{ASTR2026 transmission layer}
+\date{September 2026}
+
+\begin{document}
+\maketitle
+
+\section{Purpose}
+
+The nested WECC--California linear program prices three quantities that are not
+physical generation: \emph{shortfall} (unserved demand), \emph{wastage}
+(curtailed surplus), and \emph{transmission operating cost} (per-corridor flow
+cost). These are modelling parameters rather than measured data, and their
+values determine how the optimiser trades unserved energy, curtailment, and
+wheeling against real generation cost.
+
+This document records the benchmarks used to set them, the derivations, and the
+diagnosis that motivated the recalibration.
+
+\section{Unit convention}
+
+All costs in the model are expressed in dollars per joule, \$/J. Published
+benchmarks are almost universally quoted in dollars per megawatt hour. The
+conversion is
+\begin{equation}
+1~\mathrm{MWh} = 10^{6}~\mathrm{W} \times 3600~\mathrm{s}
+              = 3.6\times10^{9}~\mathrm{J},
+\qquad
+\left[\frac{\$}{\mathrm{MWh}}\right]
+  = \left[\frac{\$}{\mathrm{J}}\right] \times 3.6\times 10^{9}.
+\end{equation}
+Failing to apply this factor is what produced the miscalibration described in
+Section~\ref{sec:diagnosis}.
+
+\section{Diagnosis: the miscalibration}
+\label{sec:diagnosis}
+
+The generator operating costs carried in the WECC graph are correctly scaled:
+nuclear at $3.09\times10^{-9}$~\$/J is \$11.13/MWh, and the most expensive unit
+in the fleet at $1.07\times10^{-8}$~\$/J is \$38.52/MWh. Both are realistic.
+The penalty parameters were not on the same scale.
+
+\begin{table}[h]
+\centering
+\caption{Pre-calibration parameter values expressed in \$/MWh.}
+\begin{tabular}{lrrl}
+\toprule
+Parameter & \$/J (previous) & = \$/MWh & Benchmark \\
+\midrule
+\texttt{shortfall\_cost} & $1\times10^{-2}$ & 36{,}000{,}000 & \$10{,}000/MWh \\
+\texttt{wastage\_cost}   & $1\times10^{-4}$ & 360{,}000      & \$0--25/MWh \\
+Transmission (meso)      & $0$              & $0$            & $>0$ required \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Two consequences were measured on the 672-hour S0 solve.
+
+\paragraph{The objective was almost entirely penalty.}
+With shortfall of 36.523~GWh and wastage of 592.954~GWh:
+\begin{align}
+\text{shortfall penalty} &= 36.523~\text{GWh} \times \$3.6\times10^{7}/\text{MWh} = \$1.315\times10^{12}, \\
+\text{wastage penalty}   &= 592.954~\text{GWh} \times \$3.6\times10^{5}/\text{MWh} = \$0.213\times10^{12}, \\
+\text{sum}               &= \$1.528\times10^{12},
+\end{align}
+against a total objective of $\$1.528569\times10^{12}$. More than 99.9\% of the
+objective was these two penalties. Real generation cost --- which determines
+which plants run, and therefore \COtwo{} --- accounted for roughly 0.04\%.
+
+\paragraph{The LP was badly conditioned.}
+Objective coefficients spanned $1.98\times10^{-13}$ to $1\times10^{-2}$, about
+eleven orders of magnitude. Gurobi reported coefficient-range warnings on every
+solve, and the S3 scenario terminated with \texttt{Numerical trouble
+encountered}.
+
+Because generation cost was numerically negligible, the dispatch decision was
+close to degenerate: the solver had little incentive to distinguish between
+generators. This is consistent with the observed sensitivity of per-asset
+results to the Gurobi \texttt{Crossover} setting, in which barrier-only and
+crossover solutions agreed on the objective to 0.04\% but differed by a factor
+of 2.6 in \COtwo{} and 3.5 in fossil generation.
+
+\section{Calibrated values}
+
+\begin{longtable}{p{2.4cm}rrp{4.4cm}p{2.6cm}}
+\caption{Calibrated parameters, benchmarks, and sources.}\\
+\toprule
+Parameter & Value (\$/J) & = \$/MWh & Benchmark and rationale & Source \\
+\midrule
+\endfirsthead
+\toprule
+Parameter & Value (\$/J) & = \$/MWh & Benchmark and rationale & Source \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+
+\texttt{shortfall\_cost} (VOLL)
+& $2.78\times10^{-6}$ & 10{,}000
+& Value of lost load. \$10{,}000/MWh is the default VOLL in the GenX capacity
+  expansion model and sits in the lower-middle of the \$9{,}000--\$45{,}000/MWh
+  range reported for developed economies. ERCOT adopted \$35{,}000/MWh; EU
+  member state values range from EUR 4{,}000 to EUR 69{,}000/MWh. Retained at
+  \$10{,}000/MWh as a conservative, widely used default; still about
+  $260\times$ the priciest generator, so load is served whenever physically
+  possible.
+& \cite{genx,brattle2024,ercot2013,miso2022,euets} \\
+\addlinespace
+
+\texttt{wastage\_cost} (curtailment)
+& $2.78\times10^{-10}$ & 1.00
+& Curtailment of surplus is conventionally valued at \$0/MWh. A strictly
+  positive value is nonetheless required here as a tie-breaker: at exactly
+  zero, corridor arc pairs form a flat direction in the objective that an
+  interior-point method smears across. \$1/MWh is the low end of the
+  curtailment range and far below any generator's cost, so it breaks ties
+  without steering dispatch.
+& \cite{flexpower,rff} \\
+\addlinespace
+
+Transmission operating cost (meso corridors)
+& $1.0\times10^{-10}$ & 0.36
+& Published wheeling charges are about \$2/MWh, but price a whole
+  point-to-point transaction rather than each line crossed. The BA tier charges
+  transaction-scale rates (\$8/MWh on 40 of 68 lines) because BA paths are few
+  hops; meso paths cross many of about 5{,}200 substation corridors, so a
+  transaction-scale per-hop rate would dominate merit order. \$0.36/MWh per
+  corridor puts a ten-hop intra-CA path near \$3.6/MWh --- the right order of
+  magnitude for a transaction, and well below gas (about \$38/MWh).
+& \cite{brown2024,lbnl2019} \\
+\end{longtable}
+
+\subsection{Why transmission cost must be strictly positive}
+
+Each corridor is represented as two opposing directed arcs, because the
+\texttt{Transmission} class holds a single non-negative flow variable and
+applies its efficiency only on the receiving side. No linear constraint can
+forbid both arcs of a pair from being active simultaneously. With a zero flow
+cost, a corridor pair is therefore a perfectly flat direction in the objective:
+energy may be cycled $A \rightarrow B \rightarrow A$ indefinitely, burning
+$(1-\eta)$ per pass at no cost.
+
+A strictly positive per-unit flow cost removes the flatness. Cancelling the
+common component $\delta$ of any bidirectional pair strictly lowers cost by
+$2\delta c$ \emph{and} returns the round-trip losses $(1-\eta)\delta$ to both
+end nodes, so simultaneous bidirectional flow can never be optimal. The base
+WECC graph achieves the same effect by being lossless ($\eta = 1$) while
+charging $2.222\times10^{-9}$~\$/J on most BA lines.
+
+Introducing the cost reduced gross transmission flow in the crossover solution
+from 293.3~TWh to 28.7~TWh, and corridors carrying flow in both directions
+simultaneously from 1{,}097 to 268, while changing \COtwo{} by 0.1\%.
+
+\section{Expected effects of recalibration}
+
+\begin{enumerate}[leftmargin=*]
+  \item The objective coefficient range narrows from about eleven to about
+        seven orders of magnitude, improving conditioning.
+  \item Generation cost becomes the dominant term, so dispatch is driven by
+        generator economics rather than by penalty parameters. This is expected
+        to reduce, though not necessarily eliminate, the degeneracy underlying
+        the \texttt{Crossover} sensitivity.
+  \item Objective values become interpretable in dollars.
+  \item Shortfall at \$10{,}000/MWh remains about $260\times$ the most
+        expensive generator, so unserved energy appears only where demand is
+        genuinely infeasible to serve, not as an economic substitute for
+        generation.
+\end{enumerate}
+
+\section{Recommended sensitivity runs}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{VOLL:} \$35{,}000/MWh ($9.72\times10^{-6}$~\$/J), the ERCOT
+        value, to test whether conclusions depend on the penalty for unserved
+        energy.
+  \item \textbf{Curtailment:} \$25/MWh ($6.94\times10^{-9}$~\$/J), the wind
+        production tax credit opportunity cost, which is the economically
+        grounded alternative to a pure tie-breaker.
+  \item \textbf{Transmission:} \$1/MWh per corridor
+        ($2.78\times10^{-10}$~\$/J) to test sensitivity of flow patterns to the
+        wheeling assumption.
+\end{itemize}
+
+\section{Where these are set}
+
+\begin{lstlisting}
+ev_charging_project/config.py
+    NETWORK_KW['shortfall_cost'] = 10_000 / 3.6e9   # 2.78e-6  $/J
+    NETWORK_KW['wastage_cost']   =      1 / 3.6e9   # 2.78e-10 $/J
+
+Distribution-Grid-EV-CA/09_02_nest_meso_in_good.py
+    TRANSMISSION_OPERATING_COST  =   0.36 / 3.6e9   # 1.0e-10  $/J
+\end{lstlisting}
+
+\texttt{10\_01\_run\_scenarios\_S0\_S3.py} no longer overrides the shortfall and
+wastage costs; \texttt{config.py} is the single source of truth.
+
+\begin{thebibliography}{9}
+
+\bibitem{genx}
+GenX Project.
+\emph{GenX: a configurable power system capacity expansion model for studying
+low-carbon energy futures.} MIT Energy Initiative.
+\url{https://github.com/GenXProject/GenX.jl};
+\url{https://genx.mit.edu}.
+Default value of lost load \$10{,}000/MWh.
+
+\bibitem{brattle2024}
+The Brattle Group.
+\emph{Value of Lost Load Study for the ERCOT Region}, Project No.\ 55837, 2024.
+\url{https://www.brattle.com/wp-content/uploads/2024/09/Value-of-Lost-Load-Study-for-the-ERCOT-Region.pdf}
+
+\bibitem{ercot2013}
+ERCOT.
+\emph{Estimating the Value of Lost Load: Literature Review and Macroeconomic
+Analysis}, 2013.
+\url{https://www.ercot.com/files/docs/2013/06/19/ercot_valueoflostload_literaturereviewandmacroeconomic.pdf}
+
+\bibitem{miso2022}
+MISO.
+\emph{Value of Lost Load (VOLL) Development and Use}, RECBWG, August 2022.
+\url{https://cdn.misoenergy.org/}
+
+\bibitem{euets}
+Emissions-EUETS.
+\emph{Value of Lost Load (VoLL)}, internal electricity market glossary.
+\url{https://www.emissions-euets.com/internal-electricity-market-glossary/966-value-of-lost-load-voll}
+EU member state VOLL values.
+
+\bibitem{flexpower}
+Flex Power.
+\emph{The Economics of Curtailing Renewables like Wind and Solar}.
+\url{https://flex-power.energy/energyblog/the-economics-of-curtailing-renewables/}
+Zero-cost curtailment convention and PTC-driven negative bidding.
+
+\bibitem{rff}
+Resources for the Future.
+\emph{What Are the Costs and Values of Wind and Solar Power? How Are They
+Changing?}
+\url{https://www.resources.org/common-resources/what-are-costs-and-values-wind-and-solar-power-how-are-they-changing/}
+Production tax credit of about \$25/MWh as curtailment opportunity cost.
+
+\bibitem{brown2024}
+Brown, P.\ et al.
+\emph{Optimal transmission expansion modestly reduces decarbonization costs of
+U.S. electricity}, arXiv:2402.14189.
+\url{https://arxiv.org/pdf/2402.14189}
+Uses a \$2.00/MWh wheeling rate.
+
+\bibitem{lbnl2019}
+Lawrence Berkeley National Laboratory.
+\emph{Improving estimates of transmission capital costs for utility-scale wind
+and solar projects to inform renewable energy policy}, 2019.
+\url{https://eta-publications.lbl.gov/sites/default/files/td_costs_formatted_final.pdf}
+
+\end{thebibliography}
+
+\end{document}
