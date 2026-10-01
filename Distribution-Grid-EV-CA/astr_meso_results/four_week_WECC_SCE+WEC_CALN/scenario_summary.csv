@@ -1,0 +1,2 @@
+tag,horizon,scenario,status,n_nodes,n_edges,n_hours,objective,co2_kg,binding_line_hours
+four_week_WECC_SCE+WEC_CALN,four_week,S1,ok,2235,7028,672,5317145535.864614,6764514771.857764,115066.0

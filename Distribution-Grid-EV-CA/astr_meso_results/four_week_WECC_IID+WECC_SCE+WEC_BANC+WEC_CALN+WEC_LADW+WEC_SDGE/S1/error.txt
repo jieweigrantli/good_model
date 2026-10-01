@@ -1,0 +1,35 @@
+Traceback (most recent call last):
+  File "E:\GitHub\good_model\Distribution-Grid-EV-CA\10_01_run_scenarios_S0_S3.py", line 1156, in run_horizon
+    solution, built_graph, obj = _solve_nlg(nlg, policies, network_kw, solver_kw, f"{tag}-{scen}")
+                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\GitHub\good_model\Distribution-Grid-EV-CA\10_01_run_scenarios_S0_S3.py", line 651, in _solve_nlg
+    network.build()
+  File "E:\GitHub\good_model\good\optimization\network.py", line 443, in build
+    timed("regions", self._classes(regions))
+  File "E:\GitHub\good_model\good\optimization\network.py", line 435, in timed
+    cls.build(self, objs)
+  File "E:\GitHub\good_model\good\optimization\nodes\region.py", line 58, in build
+    lhs = lhs + expression
+          ~~~~^~~~~~~~~~~~
+  File "C:\Users\Grant\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\linopy\expressions.py", line 1991, in __add__
+    return merge([self, other], cls=self.__class__)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Grant\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\linopy\expressions.py", line 2838, in merge
+    ds = xr.concat([d[["coeffs", "vars"]] for d in data], dim, **kwargs)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Grant\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\xarray\structure\concat.py", line 325, in concat
+    return _dataset_concat(
+           ^^^^^^^^^^^^^^^^
+  File "C:\Users\Grant\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\xarray\structure\concat.py", line 807, in _dataset_concat
+    combined_var = concat_vars(
+                   ^^^^^^^^^^^^
+  File "C:\Users\Grant\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\xarray\core\variable.py", line 3137, in concat
+    return Variable.concat(variables, dim, positions, shortcut, combine_attrs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Grant\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\xarray\core\variable.py", line 1856, in concat
+    data = duck_array_ops.concatenate(arrays, axis=axis)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Grant\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\xarray\core\duck_array_ops.py", line 462, in concatenate
+    return xp.concatenate(as_shared_dtype(arrays, xp=xp), axis=axis)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+numpy.core._exceptions._ArrayMemoryError: Unable to allocate 7.08 GiB for an array with shape (3120, 672, 906) and data type int32

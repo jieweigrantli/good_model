@@ -1,0 +1,2 @@
+tag,horizon,scenario,status,n_nodes,n_edges,n_hours
+four_week_WECC_IID+WECC_SCE+WEC_BANC+WEC_CALN+WEC_LADW+WEC_SDGE,four_week,S1,"error: Unable to allocate 7.08 GiB for an array with shape (3120, 672, 906) and data type int32",3120,9964,672
