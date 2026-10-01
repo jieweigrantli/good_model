@@ -869,11 +869,16 @@ corridors.
 | layer | PG&E | SCE | SDG&E | LADWP / BANC / IID |
 |---|---|---|---|---|
 | node exists, located | 100% GRIP + HIFLD | 100% HIFLD | 100% HIFLD | 100% HIFLD |
-| **substation rating** | **73.3% measured** (66.6% ICA, 6.7% bank sums) | 41.4% published GNA | 0%, now **59% available** via 08_16 | **0%** |
-| **base load, hourly** | **43.4% measured** | 0% | 0%, peak only, no hourly | **0%** |
-| corridor exists | 41.4% documented (21.2 asserted, 20.2 confirmed) | 30.6% documented | 26.0% documented | 10.7 to 22.8% |
+| **substation rating** | **73.3% measured** (66.6% ICA, 6.7% bank sums) | 41.4%, from ICA; the GNA path resolves nothing | 0%, now **59% available** via 08_16 | **0%** |
+| **base load, measured** | **632 substations**, hourly | **528 substations**, from DRPEP amps | 0%, peak only | **0%** |
+| corridor exists | 41.4% documented | **43.0% documented** (was 30.6%, lifted by 08_17) | 26.0% documented | 18.1 to 40.1% |
 | **corridor capacity (MVA)** | ~0% measured, **79.7% kV-to-MVA lookup** | 21.5% lookup, rest off-table voltages | **97.0% lookup** | 43 to 93% lookup |
 | EV load | modelled throughout (CSTDM + Li & Jenn charging model) | same | same | same |
+
+An earlier version of this table recorded SCE base load as 0% measured. That was
+wrong: 08_03 reads 528 SCE substation load profiles from DRPEP amps, so SCE is the
+second-best-measured balancing area on the load side as well as, now, the
+best-documented on corridors.
 
 Three readings of that table matter more than the individual cells.
 
@@ -1048,6 +1053,61 @@ still describes the model as run. Wiring them in would take SDG&E from no measur
 ratings to roughly PG&E's level, and would let SCE's corridors be asserted from an
 inventory rather than inferred, which is the precondition for expanding the
 substation layer beyond PG&E at all.
+
+### 0.9 Expanding past PG&E: what the SCE layer changed
+
+SCE was blocked not by missing capacity data but by two faults that were initially
+read as one. Fixing both took the balancing area from unusable to comparable with
+PG&E, and the model now covers **78.5% of California EV load** against 41.2% for
+PG&E alone.
+
+**Fault 1, corridors.** SCE's corridors were 64.3% inferred, with 244 of 1,959
+confirmed. 120 substations had a mean corridor degree of 2.65, a BA interface on 0.8%
+of them, and shed 376 GWh in every hour of the horizon. `08_17` pulls SCE's own
+transmission circuit inventory -- 1,030 circuits, 13,386 route-miles, 756
+subtransmission and 244 transmission -- and `08_08` now asserts corridors from it.
+SCE publishes no endpoint names, so corridors come from endpoint geometry at a 500 m
+tolerance, chosen where the measured snap distribution flattens: median 111 m, 65.9%
+within 200 m, 77.7% within 500 m. They carry their own `sce_circuit` provenance tag
+rather than being folded into the named sources.
+
+Of the 503 corridors recoverable against SCE nodes, **294 were already in the model**
+-- a 58% independent validation of the inferred topology -- and 209 were new.
+
+**Fault 2, ratings.** Both SCE sources carry near-zero entries that are absent data
+rather than small substations: 46 of 231 GNA ratings and 63 of 735 ICA capacities
+below 1 MW, against medians of 72.5 and 31.1 MW. HIFLD_2417 was rated 0.37 MW against
+34.6 MW of assigned peak and HIFLD_555 1.36 MW against 87.9 MW, and both were among
+the largest SCE deficits, so part of the 376 GWh attributed to stranded topology was
+in fact broken ratings. Published values below `MIN_RATING_W` are now treated as
+missing and fall through to the derived rule, never clamped to the floor. 58 rejected,
+and because the rejection also resolves collisions where two SCE substations map to one
+HIFLD node and the near-zero value was winning, HIFLD_555 becomes 188.2 MW and
+HIFLD_2417 81.4 MW. The worst rating-to-load ratio in the model improves from 0.011 to
+0.335.
+
+**Measured effect**, four-week S1, `--no-capex`:
+
+| | before | after |
+|---|---:|---:|
+| SCE shortfall | 376.04 GWh on 120 nodes | **92.87 GWh on 50 nodes** |
+| PG&E shortfall in the same run | 91.18 GWh | 73.06 GWh |
+| total | 467.22 GWh | **165.93 GWh** |
+| SCE documented corridors | 30.6% | **43.0%** |
+| graph build time | 952 s | **45 s** |
+
+SCE's shortfall falls 75% and PG&E's figure in the combined run (73.06 GWh) agrees
+with the PG&E-only run (73.78 GWh) to 1%, so adding SCE does not disturb the tier
+that was already validated. The build speedup is the exact asset merge described in
+0.8, not a change of model.
+
+**What remains.** 92.87 GWh of SCE shortfall on 50 nodes, which is 1.86 GWh per node
+against PG&E's 0.79, so SCE is still the weaker tier. 58% of the originally stranded
+substations gained no corridor, because SCE's inventory covers transmission and
+subtransmission and a substation fed only at distribution voltage never appears in it.
+And SCE's GNA path resolves no ratings at all -- all 231 rows fail the name lookup in
+`_sce_name_to_node` -- which is pre-existing, means every SCE rating comes from the ICA
+path, and matters because GNA is the source Li & Jenn used for SCE.
 
 ## 12. Migration to GOOD 2.x
 

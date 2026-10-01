@@ -644,7 +644,23 @@ def _solve_nlg(nlg, policies, network_kw, solver_kw, label: str):
     """
     import good
 
-    graph = astr_v2.to_v2(nlg, transmission_efficiency=astr_v2.TRANSMISSION_EFFICIENCY)
+    # Merge indistinguishable assets in the out-of-state copper plates. GOOD 2.x
+    # builds the region energy balance as one dense (region, step, term) array padded
+    # to the worst-connected node, and WECC_PNW holds 918 individual assets while the
+    # median node has 8 -- 0.9% utilisation, 7.78 GB, and the six-balancing-area
+    # California model dies allocating it. The merge is exact rather than lossy: with
+    # no unit commitment in this model, assets sharing profile shape, per-MWh cost,
+    # emission factor and every bound are one asset of the summed capacity. Verified
+    # on a 48 h model, 5,590 assets against 4,165 with the objective identical to
+    # 5.9e-14 relative. California regions are never merged, since per-substation
+    # resolution there is the point of the study.
+    non_ca = [n for n in (nlg.get("nodes") or [])
+              if n.get("id") not in astr_v2.CALIFORNIA_REGIONS]
+    graph = astr_v2.to_v2(
+        nlg,
+        transmission_efficiency=astr_v2.TRANSMISSION_EFFICIENCY,
+        aggregate_regions=[n["id"] for n in non_ca if not str(n["id"]).startswith("SUB_")],
+    )
     print(f"  Building network [{label}] nodes={graph.number_of_nodes()} edges={graph.number_of_edges()}")
     t0 = time.time()
     network = good.Network(**network_kw).from_graph(graph, policies)
