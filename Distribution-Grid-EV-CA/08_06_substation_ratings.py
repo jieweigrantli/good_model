@@ -44,6 +44,7 @@ Writes:
 from __future__ import annotations
 
 import argparse
+import re
 
 import geopandas as gpd
 import numpy as np
@@ -118,6 +119,31 @@ def pge_ratings() -> pd.DataFrame:
     return out[["substation_id", "rating_W"]]
 
 
+def _strip_voltage_suffix(name) -> str:
+    """Drop the voltage transformation GNA appends to a substation name.
+
+    SCE's two datasets name the same substations differently, and until this was
+    noticed the GNA rating path resolved **nothing at all** -- 0 of 843 names
+    matched, so every SCE rating came from the ICA path instead:
+
+        GNA Substations (layer 1)   "Acton 66/12", "Alessandro 115/33"
+        ICA substations             "Windsor Hills", "Woodruff"
+
+    GNA suffixes the transformation, so one substation appears once per voltage
+    pair ("Alessandro 115/33" and "Alessandro 115/12" are the same yard).
+    Stripping the suffix lifts the overlap from 0 to 702 of 734 ICA names, and
+    collapsing the duplicates by taking the largest rating per yard is what
+    ``sce_ratings`` already does.
+
+    The pattern has no "KV" in it, which is why ``08_08.norm`` -- written for
+    HIFLD and OSM names, where the voltage is spelled out -- does not catch it.
+    """
+    s = str(name or "").strip()
+    s = re.sub(r"\s+\d{1,3}(?:\.\d+)?(?:\s*/\s*\d{1,3}(?:\.\d+)?)+\s*(?:KV)?$", "",
+               s, flags=re.I)
+    return s.strip().upper()
+
+
 def _sce_name_to_node() -> dict[str, str]:
     """SCE substation name -> model node id, by location."""
     pts_path = SCE_DIR / "ica_substations_geom.gpkg"
@@ -169,7 +195,7 @@ def sce_ratings() -> pd.DataFrame:
         g = pd.read_parquet(gna)
         g["rating"] = pd.to_numeric(g.get("rating"), errors="coerce")
         for _, r in g.dropna(subset=["rating"]).iterrows():
-            nid = lut.get(str(r.get("substation_name", "")).strip().upper())
+            nid = lut.get(_strip_voltage_suffix(r.get("substation_name")))
             if not nid or not r["rating"] > 0:
                 continue
             w = float(r["rating"]) * 1e6
@@ -189,7 +215,7 @@ def sce_ratings() -> pd.DataFrame:
         cap = (pl.fillna(0) + mr.fillna(0)) * 1e6
         added = 0
         for nid_name, c in zip(s.get("SUB_NAME", []), cap):
-            nid = lut.get(str(nid_name).strip().upper())
+            nid = lut.get(_strip_voltage_suffix(nid_name))
             if not nid or not c > 0 or nid in rows:
                 continue
             if c < MIN_RATING_W:
