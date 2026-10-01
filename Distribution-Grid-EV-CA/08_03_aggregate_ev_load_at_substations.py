@@ -544,7 +544,16 @@ def _substitute_measured_base(sub_ids, base_w, w_lookup):
 # Substations this close are in the same urban network and a utility can and does
 # shift load between them; two substations 100 km apart cannot share anything, so
 # the reallocation below is deliberately local rather than BA-wide.
-SIBLING_RADIUS_M = 5000.0
+#
+# 8 km rather than 5: San Francisco's SF K and SF L are 5.26 km apart, so a 5 km
+# radius left the city's two worst-allocated substations in separate pools and moved
+# nothing at all. Measured against the eligible set, the radius buys very little
+# either way -- 5 km reaches 4 substations and 0 MW, 8 km 4 substations and 31 MW,
+# 15 km 12 substations and 64 MW -- because only 47 of 2,250 substations are both
+# unmeasured and carrying a published rating. Corridor adjacency would be the better
+# criterion but is unusable here: our reconstruction gives every SF substation
+# degree 1 and connects them only by 4 to 5 hop paths.
+SIBLING_RADIUS_M = 8000.0
 
 # Cap allocated load at this multiple of a substation's published rating.
 # PG&E's measured loadings reach 1.37x at the 99th percentile and 3.36x at the

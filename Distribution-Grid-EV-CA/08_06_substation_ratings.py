@@ -203,6 +203,107 @@ def pge_ica_ratings() -> pd.DataFrame:
     return d[["substation_id", "rating_W"]]
 
 
+# A nearby substation whose ICA rating exceeds its own bank sum by at least this
+# much is taken as proof that the bank inventory in that cluster is incomplete.
+BANK_SUM_PROOF_FACTOR = 2.0
+BANK_SUM_PROOF_RADIUS_M = 8000.0
+
+
+def _demote_proven_incomplete_bank_sums(df, ica_ids, nodes):
+    """Discard bank-sum ratings that are below their own load, where a neighbour proves why.
+
+    Two different faults make a published rating fall below the load its substation
+    already serves, and they need opposite treatment:
+
+    * the **load allocation** put too much there, in which case the rating is right
+      and the allocation should be fixed -- which is what 08_03's sibling
+      reallocation addresses; or
+    * the **bank inventory is incomplete**, in which case the rating is not a rating
+      at all and using it manufactures congestion.
+
+    San Francisco shows the second fault conclusively, and shows it from inside the
+    same cluster. SF X (02201) carries a GRIP bank sum of 9.88 MVA and an ICA rating
+    of 151.2 MW: the bank inventory understates the real capacity by 15.3x at a
+    substation where both numbers exist. SF K and SF L have no ICA record, bank sums
+    of 31.7 and 24.7 MW, and allocated peaks of 86.9 and 58.7 MW. Their bank sums
+    cannot be trusted when a neighbour's is wrong by that margin, and between them
+    they carried 17.0 of the 20.09 GWh of transformer-attributable shortfall.
+
+    Sibling reallocation cannot fix that case: the one SF substation with real spare
+    capacity, SF G at 13.1 MW on a 43.0 MW rating, is *measured*, so its load is a
+    fact and cannot be overwritten. The three eligible substations hold 165.4 MW
+    against 77.2 MW of bank sums, so every split leaves all three overloaded and
+    pushes SF J from a healthy 0.95x to 2.14x.
+
+    The rule is deliberately narrow, so this is a validity test on a data source
+    rather than a correction toward an expected answer. A substation is demoted only
+    when **both** hold:
+
+    * its own bank-sum rating is below its own assigned peak; and
+    * a substation within 8 km has both a bank sum and an ICA rating, and the ICA
+      rating is at least 2x the bank sum -- demonstrated incompleteness, in that
+      cluster, from the utility's own two datasets.
+
+    Demoted substations fall through to ``peak / TYPICAL_LOADING`` like any node with
+    nothing published. Nothing is clipped and no target is imposed; a rating we can
+    show to be incomplete is simply not used as a rating. Substations that fail the
+    first test but have no nearby proof keep their published value and stay flagged,
+    because for those the allocation remains the more likely fault.
+    """
+    import geopandas as gpd
+
+    tight = df["below_assigned_peak"] & df["rating_W"].notna() & ~df["substation_id"].isin(ica_ids)
+
+    if not tight.any():
+        print("  bank-sum demotion: no published rating falls below its own peak")
+        return pd.Series(False, index=df.index)
+
+    # Substations where both a bank sum and an ICA rating exist, so the two can be
+    # compared directly.
+    ica = pge_ica_ratings().set_index("substation_id")["rating_W"]
+    both = df[df["substation_id"].isin(ica.index) & df["rating_W"].notna()].copy()
+    gna = pge_ratings().set_index("substation_id")["rating_W"]
+    both["bank_W"] = both["substation_id"].map(gna)
+    both = both[both["bank_W"].notna() & (both["bank_W"] > 0)]
+    both["factor"] = both["substation_id"].map(ica) / both["bank_W"]
+    proof = both[both["factor"] >= BANK_SUM_PROOF_FACTOR]
+
+    if proof.empty:
+        print("  bank-sum demotion: no cluster has a proven-incomplete bank sum; none demoted")
+        return pd.Series(False, index=df.index)
+
+    try:
+        g = gpd.read_file(C.MESO_DIR / "meso_hubs.gpkg").to_crs(C.CA_ALBERS_CRS)
+    except Exception as exc:  # noqa: BLE001 - geometry optional
+        print(f"  bank-sum demotion: geometry unavailable ({exc}); none demoted")
+        return pd.Series(False, index=df.index)
+
+    g["substation_id"] = g["substation_id"].astype(str)
+    xy = {s: (p.x, p.y) for s, p in zip(g.substation_id, g.geometry)}
+    proof_pts = [xy[s] for s in proof["substation_id"].astype(str) if s in xy]
+
+    out = pd.Series(False, index=df.index)
+    for i in df.index[tight]:
+        p = xy.get(str(df.at[i, "substation_id"]))
+        if p is None:
+            continue
+        if any((p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 <= BANK_SUM_PROOF_RADIUS_M ** 2
+               for q in proof_pts):
+            out.at[i] = True
+
+    df.loc[out, "rating_W"] = np.nan
+    print(f"  bank-sum demotion: {int(tight.sum())} published ratings sit below their own "
+          f"peak; {int(out.sum())} of them lie within "
+          f"{BANK_SUM_PROOF_RADIUS_M / 1000:.0f} km of a substation whose ICA rating exceeds "
+          f"its bank sum by >= {BANK_SUM_PROOF_FACTOR:.0f}x, so those are demoted to derived")
+    if len(proof):
+        worst = proof.nlargest(3, "factor")
+        for _, r in worst.iterrows():
+            print(f"    proof: {r['substation_id']} bank {r['bank_W'] / 1e6:,.1f} MW vs "
+                  f"ICA {ica[r['substation_id']] / 1e6:,.1f} MW ({r['factor']:.1f}x)")
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--typical-loading", type=float, default=TYPICAL_LOADING)
@@ -232,16 +333,20 @@ def main() -> None:
         np.where(df["rating_W"].notna(), "published", "derived"),
     )
 
+    # A published rating below the assigned peak would make the node infeasible on
+    # its own demand. Two different faults can produce that, and they need opposite
+    # treatment, so they are separated before any rating is derived.
+    df["below_assigned_peak"] = df["rating_W"] < df["total_peak_W"]
+    demoted = _demote_proven_incomplete_bank_sums(df, ica_ids, nodes)
+
     derived = df["rating_W"].isna()
     df.loc[derived, "rating_W"] = np.maximum(
         df.loc[derived, "total_peak_W"] / max(args.typical_loading, 1e-6),
         MIN_RATING_W,
     )
-    # A published rating below the assigned peak would make the node
-    # infeasible on its own demand. Keep the published value but record it, so
-    # the load allocation gets fixed rather than the rating quietly inflated.
-    tight = df["rating_W"] < df["total_peak_W"]
-    df["below_assigned_peak"] = tight
+    df.loc[demoted, "rating_source"] = "derived_bank_sum_incomplete"
+    # Recomputed after demotion, so the flag describes the ratings actually used.
+    df["below_assigned_peak"] = df["rating_W"] < df["total_peak_W"]
 
     C.ensure_dir(OUT_CSV.parent)
     df.to_csv(OUT_CSV, index=False)
@@ -255,7 +360,9 @@ def main() -> None:
     ok = df["rating_W"] > 0
     print(f"\n  implied loading (peak / rating): median "
           f"{(df.loc[ok, 'total_peak_W'] / df.loc[ok, 'rating_W']).median():.2f}")
-    print(f"  nodes whose published rating is below assigned peak: {int(tight.sum()):,}")
+    print(f"  nodes whose rating is still below assigned peak: "
+          f"{int(df['below_assigned_peak'].sum()):,} "
+          f"({int(demoted.sum()):,} demoted to derived on proven-incomplete bank sums)")
 
 
 if __name__ == "__main__":
