@@ -144,7 +144,25 @@ def sce_ratings() -> pd.DataFrame:
         print("  SCE substation geometry missing; skipping")
         return pd.DataFrame(columns=["substation_id", "rating_W"])
 
+    # A published value below MIN_RATING_W is treated as MISSING rather than as a
+    # rating, so it falls through to the derived rule like any unrated node.
+    #
+    # Both SCE sources carry near-zero entries that are absent data rather than tiny
+    # substations: 46 of 231 GNA ratings and 63 of 735 ICA capacities sit below 1 MW,
+    # against medians of 72.5 and 31.1 MW. Passed through, those produce substations
+    # rated at a fraction of the load they already serve -- HIFLD_2417 at 0.37 MW
+    # against 34.6 MW of assigned peak, HIFLD_555 at 1.36 MW against 87.9 MW -- which
+    # is not tightness the model should discover but an input that cannot be true.
+    # Two of them, HIFLD_555 and HIFLD_562, were among the largest SCE deficits and
+    # were initially mistaken for stranded topology.
+    #
+    # The sub-floor value is discarded, never clamped up to the floor. Clamping would
+    # put a spike of substations at exactly MIN_RATING_W and would be fitting an
+    # output; discarding says only that a number this small is not a measurement of a
+    # substation, which is the same validity test applied to PG&E bank sums below
+    # their own served load.
     rows: dict[str, float] = {}
+    rejected = {"gna": 0, "ica": 0}
 
     gna = SCE_DIR / "gna_substations.parquet"
     if gna.is_file():
@@ -152,9 +170,16 @@ def sce_ratings() -> pd.DataFrame:
         g["rating"] = pd.to_numeric(g.get("rating"), errors="coerce")
         for _, r in g.dropna(subset=["rating"]).iterrows():
             nid = lut.get(str(r.get("substation_name", "")).strip().upper())
-            if nid and r["rating"] > 0:
-                rows[nid] = max(rows.get(nid, 0.0), float(r["rating"]) * 1e6)
-        print(f"  SCE GNA: {len(rows):,} substations rated")
+            if not nid or not r["rating"] > 0:
+                continue
+            w = float(r["rating"]) * 1e6
+            if w < MIN_RATING_W:
+                rejected["gna"] += 1
+                continue
+            rows[nid] = max(rows.get(nid, 0.0), w)
+        print(f"  SCE GNA: {len(rows):,} substations rated"
+              + (f" ({rejected['gna']:,} rejected below {MIN_RATING_W / 1e6:.0f} MW)"
+                 if rejected["gna"] else ""))
 
     ica = SCE_DIR / "substations.parquet"
     if ica.is_file():
@@ -165,10 +190,16 @@ def sce_ratings() -> pd.DataFrame:
         added = 0
         for nid_name, c in zip(s.get("SUB_NAME", []), cap):
             nid = lut.get(str(nid_name).strip().upper())
-            if nid and c > 0 and nid not in rows:
-                rows[nid] = float(c)
-                added += 1
-        print(f"  SCE ICA: {added:,} further substations from load + headroom")
+            if not nid or not c > 0 or nid in rows:
+                continue
+            if c < MIN_RATING_W:
+                rejected["ica"] += 1
+                continue
+            rows[nid] = float(c)
+            added += 1
+        print(f"  SCE ICA: {added:,} further substations from load + headroom"
+              + (f" ({rejected['ica']:,} rejected below {MIN_RATING_W / 1e6:.0f} MW)"
+                 if rejected["ica"] else ""))
 
     return pd.DataFrame({"substation_id": list(rows), "rating_W": list(rows.values())})
 
