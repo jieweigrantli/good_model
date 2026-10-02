@@ -162,6 +162,10 @@ def _restrict_network(network: dict, nested_bas: set[str]) -> dict:
     have_iface = {i["hub_id"] for i in out["ba_interfaces"]}
     peak = {n["hub_id"]: float(n.get("total_peak_W") or 0.0) for n in out["nodes"]}
     ba_of = {n["hub_id"]: n.get("parent_ba") for n in out["nodes"]}
+    # A gateway sized to load alone strands any component that generates more
+    # than it consumes -- the same fault as the synthetic-feed floor in 09_01,
+    # reached by a different route.
+    gen_W = C.injection_capacity_by_hub(out["generators"])
 
     added = 0
     # Components and their anchors are both ordered explicitly. `max()` over a
@@ -177,8 +181,10 @@ def _restrict_network(network: dict, nested_bas: set[str]) -> dict:
     for comp in sorted(nx.connected_components(gg), key=lambda c: sorted(c)[0]):
         if comp & have_iface:
             continue
-        anchor = max(sorted(comp), key=lambda h: (peak.get(h, 0.0), h))
-        cap = max(sum(peak.get(h, 0.0) for h in comp), 5e6)
+        anchor = max(sorted(comp),
+                     key=lambda h: (max(peak.get(h, 0.0), gen_W.get(h, 0.0)), h))
+        cap = max(sum(peak.get(h, 0.0) for h in comp),
+                  sum(gen_W.get(h, 0.0) for h in comp), 5e6)
         out["ba_interfaces"] = list(out["ba_interfaces"]) + [{
             "hub_id": anchor,
             "parent_ba": ba_of.get(anchor),

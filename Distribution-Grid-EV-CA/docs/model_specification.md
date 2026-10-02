@@ -958,6 +958,80 @@ longer distinguishes between siblings.
 
 ### 0.8 Discussion items
 
+**The synthetic-feed floor, and why it stranded 7.9 GW of generation.** `09_01`
+gives every substation that no source connects an explicit, tagged radial feed, so
+that a missing wire does not manufacture shortfall that reads as congestion. The
+feed was sized to the load the component serves, with a 5 MW floor for a component
+with no load at all. That floor was the wrong size for a *generation switchyard*,
+which serves no load by construction — serving no load is precisely why
+`generation_switchyards` has to keep it as a node rather than letting the TAZ test
+drop it. Every such component fell to 5 MW, so a switchyard could inject hundreds of
+MW and export five.
+
+The effect ran in the opposite direction to the one the feeds were added to prevent.
+Instead of fabricating shortfall it fabricated **spill**: at three-IOU scope, four
+nodes spilled 647.3 GWh over four weeks, 65% of all substation curtailment, and
+spilled in 671 or 672 of 672 hours. The two worst were `SUB_HIFLD_3316` (870 MW of
+wind and solar behind a 5 MW feed) and `SUB_HIFLD_2620` (811 MW of wind), both
+Tehachapi-area switchyards that in reality export over SCE's Tehachapi Renewable
+Transmission Project — roughly 4,500 MW of 500 kV, whose hub `Antelope` the model
+already contains and connects correctly.
+
+This mattered more than a spill misstatement, because `08_14` sizes the battery
+fleet *against spill*. Fabricated spill therefore sized fabricated fleet, and
+M_BESS is measured from the result. Unlike P_cong, which is a difference between two
+scenarios sharing the same limits and so cancels errors common to both, M_BESS
+inherits the spill estimate's errors directly.
+
+The feed is now sized to `max(component peak load, component injection capacity,
+5 MW)`. It remains radial — one edge from an islanded component to the main one — so
+it carries no through-flow whatever its rating, and the two limits are taken as a
+maximum rather than a sum because a node exporting its generation is not
+simultaneously importing its peak. 47 of the 328 feeds are now generation-led,
+freeing 7.90 GW. The same fault existed independently in `_restrict_network`
+(`09_02`), which sizes a BA gateway for any component islanded by restricting the
+model to a subset of balancing areas; it is fixed the same way.
+
+Two notes for the discussion. First, the membership test is easy to get wrong: the
+GOOD v1 schema this model inherits represents variable renewables as the `Load`
+class with a type of `solar` or `wind`, not as `Producer`, so a filter of
+`class == "Producer"` silently drops all 1,041 California solar and wind records —
+exactly the assets at these switchyards. A first attempt at this fix made that
+mistake and freed only 2.74 GW. The test now lives in one place,
+`common.injection_capacity_by_hub`. Second, `optional` records are excluded, because
+a capex candidate may never be built and sizing a wire to it would presume the
+expansion the model is meant to decide.
+
+**The network build was not reproducible, and that was found by trying to measure
+the fix above.** Diffing the rebuilt network against the previous one showed the
+synthetic feeds changing as intended — and sixteen unrelated corridors moving as
+well. Building twice from identical inputs confirmed it: 4,947 edges against 4,946,
+different edge sets, identical capacities. The links that moved were all between
+*near-coincident* substations that tie on capacity, `SUB_25454` against `SUB_25457`
+and `SUB_HIFLD_3994` against `SUB_HIFLD_3995`.
+
+The cause was in corridor contraction (`_reconstruct_corridors`). A run of
+pass-through geometry collects the substations it touches into a `terminals` dict,
+sorts them by capacity, and keeps the largest `CORRIDOR_MAX_JUNCTION_TERMINALS` of
+them before taking an MST. The runs come from `nx.connected_components`, which
+yields *sets*, and an anchor's node key is a tuple containing a substation id —
+`("S", "SUB_25454")` — whose hash Python randomises per process. Set iteration
+order therefore set the dict's insertion order, which broke the capacity ties,
+which chose which terminals survived the cap, which changed the MST. This is the
+same class of defect already fixed in `_restrict_network`, where a `max()` over a
+set of handles moved a 5 MW feed between substations from one scenario to the next.
+
+Both iteration orders are now explicit — runs sorted by their minimum node key,
+nodes within a run sorted — and the capacity sort carries a tie-break on the node
+key. Two consecutive builds now agree exactly on edges, capacities and interfaces.
+
+The lesson is worth recording beyond the fix. The defect was invisible for as long
+as nobody rebuilt the network and compared, and it had no effect on any single
+run's validity. What it destroyed was *attribution*: rebuilding to change one thing
+silently changed sixteen others, so no before-and-after scenario comparison could be
+credited to the change it was testing. Any future structural change should be
+preceded by a two-build determinism check.
+
 **`TYPICAL_LOADING`, and where the number came from.** This constant divides an
 assigned peak to derive a transformer rating for 1,883 substations, 60% of the model,
 and no external source exists for it. Recomputed from GRIP

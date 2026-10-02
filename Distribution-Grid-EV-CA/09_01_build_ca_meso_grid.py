@@ -771,9 +771,26 @@ def _reconstruct_corridors(
                     _emit(hid_a, hid_b, ed["capacity_W"], ed["rated_kv"])
 
     # Anchors joined through a run of pass-through geometry.
-    for run in nx.connected_components(passthrough):
+    #
+    # Every iteration order here is made explicit, because this block decided
+    # the topology from the hash order of a set. `nx.connected_components`
+    # yields sets of node keys, and a node key for an anchor is
+    # ``("S", "SUB_25454")`` -- a tuple containing a string, whose hash is
+    # randomised per process. Iterating the run in that order set the insertion
+    # order of `terminals`, which broke ties in the capacity sort below, which
+    # chose which terminals survived the fan-out cap, which changed the MST.
+    # Two builds of the same inputs therefore emitted different corridors: 4,947
+    # edges against 4,946, with 16 links moving between near-coincident
+    # substations that tie on capacity -- SUB_25454 against SUB_25457,
+    # SUB_HIFLD_3994 against SUB_HIFLD_3995. Capacities never differed, only
+    # which node held the connection.
+    #
+    # That is a reproducibility defect on its own, and it also made any
+    # before-and-after scenario comparison unattributable, because rebuilding
+    # the network to change one thing silently changed sixteen others.
+    for run in sorted(nx.connected_components(passthrough), key=min):
         terminals: dict[tuple, dict] = {}
-        for node in run:
+        for node in sorted(run):
             for nbr in g.neighbors(node):
                 if nbr not in anchor_nodes:
                     continue
@@ -787,7 +804,10 @@ def _reconstruct_corridors(
         # point-to-point corridor; connecting every pair through it would
         # credit each pair with capacity the others are also using. Cap the
         # fan-out so a single large meshed run cannot generate a dense clique.
-        items = sorted(terminals.items(), key=lambda kv: kv[1]["cap"], reverse=True)
+        # Tie-break on the node key so equal-capacity terminals order the same
+        # way in every process; `reverse=True` on capacity alone left the tie to
+        # dict insertion order.
+        items = sorted(terminals.items(), key=lambda kv: (-kv[1]["cap"], kv[0]))
         if len(items) > CORRIDOR_MAX_JUNCTION_TERMINALS:
             items = items[:CORRIDOR_MAX_JUNCTION_TERMINALS]
 
@@ -914,12 +934,31 @@ def merge_asserted_corridors(edges: pd.DataFrame, hubs: gpd.GeoDataFrame) -> pd.
     return edges
 
 
-# A synthetic radial feed is sized to the load it serves, never more, so it
-# cannot become a bulk bypass. Floor keeps a zero-load node usable.
+# A synthetic radial feed is sized to the larger of the load it serves and the
+# generation it evacuates, so it cannot become a bulk bypass. Floor keeps a node
+# with neither usable.
+#
+# Sizing on load alone was wrong for generation switchyards, which serve no load
+# by definition -- that is why `generation_switchyards` had to keep them as nodes
+# in the first place. Every such component fell to the floor, so a switchyard
+# with hundreds of MW of wind could export 5 MW and spilled the rest. At
+# three-IOU scope this stranded 5,855 MW behind 24 feeds and manufactured 647 GWh
+# of curtailment in four weeks -- 65% of all substation spill -- which inflated
+# the storage opportunity M_BESS is measured from, because 08_14 sizes the battery
+# fleet against spill. The two worst cases were SUB_HIFLD_3316 (870 MW of
+# generation, 5 MW feed) and SUB_HIFLD_2620 (811 MW, 5 MW), both Tehachapi-area
+# wind switchyards that in reality export over SCE's Tehachapi Renewable
+# Transmission Project.
+#
+# The feed stays radial -- one edge from an islanded component to the main one --
+# so it carries no through-flow whatever its rating, and the load and generation
+# limits are taken as a maximum rather than a sum because a node exporting its
+# generation is not simultaneously importing its peak.
 SYNTHETIC_FEED_FLOOR_W = 5e6
 
 
-def add_synthetic_feeds(edges: pd.DataFrame, hubs: gpd.GeoDataFrame) -> pd.DataFrame:
+def add_synthetic_feeds(edges: pd.DataFrame, hubs: gpd.GeoDataFrame,
+                        generators: list[dict] | None = None) -> pd.DataFrame:
     """Give every disconnected node or island an explicit, tagged radial feed.
 
     A node with no path to the rest of the network cannot import, so its
@@ -931,8 +970,8 @@ def add_synthetic_feeds(edges: pd.DataFrame, hubs: gpd.GeoDataFrame) -> pd.DataF
 
     These feeds are an admission that we do not know the wire, not a claim
     that we do. Each is tagged ``synthetic_feed`` so every result can be
-    reported with and without them, and each is sized to the load it serves
-    so it can never carry bulk transfer.
+    reported with and without them, and each is sized to the larger of the
+    load it serves and the generation it evacuates.
     """
     import networkx as nx
     from scipy.spatial import cKDTree
@@ -949,17 +988,23 @@ def add_synthetic_feeds(edges: pd.DataFrame, hubs: gpd.GeoDataFrame) -> pd.DataF
     kv = pd.to_numeric(ix.get("site_kv"), errors="coerce")
     peak = pd.to_numeric(ix.get("total_peak_W"), errors="coerce").fillna(0.0)
 
+    gen_W = C.injection_capacity_by_hub(generators)
+
     main_ids = [h for h in ix.index if h in main]
     main_xy = np.column_stack([ix.loc[main_ids].geometry.x, ix.loc[main_ids].geometry.y])
     main_kv = kv.loc[main_ids].to_numpy(dtype=float)
     tree = cKDTree(main_xy)
 
     rows = []
+    gen_led: list[tuple[str, float]] = []
     for comp in comps[1:]:
         members = [h for h in ix.index if h in comp]
-        # Attach at the member with the most load; that is where a utility
-        # would actually bring the feed in.
-        anchor = max(members, key=lambda h: float(peak.get(h, 0.0)))
+        # Attach at the member with the most to move, load or generation;
+        # that is where a utility would actually bring the feed in. Ranking on
+        # load alone put the feed on an arbitrary member of any component that
+        # serves no load, which is every generation switchyard.
+        anchor = max(members, key=lambda h: (max(float(peak.get(h, 0.0)),
+                                                 gen_W.get(h, 0.0)), h))
         axy = (ix.loc[anchor].geometry.x, ix.loc[anchor].geometry.y)
         a_kv = float(kv.get(anchor, np.nan))
 
@@ -977,13 +1022,17 @@ def add_synthetic_feeds(edges: pd.DataFrame, hubs: gpd.GeoDataFrame) -> pd.DataF
             pick = int(idx[0])
 
         comp_peak = float(sum(float(peak.get(h, 0.0)) for h in members))
+        comp_gen = float(sum(gen_W.get(h, 0.0) for h in members))
+        cap = max(comp_peak, comp_gen, SYNTHETIC_FEED_FLOOR_W)
+        if comp_gen > max(comp_peak, SYNTHETIC_FEED_FLOOR_W):
+            gen_led.append((anchor, comp_gen))
         rows.append(
             {
                 "source": anchor,
                 "target": main_ids[pick],
-                "installed_capacity_W": max(comp_peak, SYNTHETIC_FEED_FLOOR_W),
+                "installed_capacity_W": cap,
                 "n_lines": 1,
-                "rated_mva": max(comp_peak, SYNTHETIC_FEED_FLOOR_W) / 1e6,
+                "rated_mva": cap / 1e6,
                 "rated_kv": a_kv if not np.isnan(a_kv) else np.nan,
                 "provenance": "synthetic_feed",
             }
@@ -992,7 +1041,12 @@ def add_synthetic_feeds(edges: pd.DataFrame, hubs: gpd.GeoDataFrame) -> pd.DataF
     out = pd.concat([edges, pd.DataFrame(rows)], ignore_index=True)
     served = sum(r["installed_capacity_W"] for r in rows)
     print(f"  {len(rows):,} synthetic radial feeds for disconnected components "
-          f"({served / 1e9:.1f} GW of load reconnected)")
+          f"({served / 1e9:.1f} GW reconnected)")
+    print(f"    {len(gen_led):,} sized by generation rather than load "
+          f"({sum(c for _, c in gen_led) / 1e9:.2f} GW of injection that would "
+          f"otherwise sit behind the {SYNTHETIC_FEED_FLOOR_W / 1e6:.0f} MW floor)")
+    for hid, c in sorted(gen_led, key=lambda t: -t[1])[:8]:
+        print(f"      {hid:18} {c / 1e6:8,.0f} MW")
     return out
 
 
@@ -1452,12 +1506,15 @@ def main(aggregate: int | None = None, no_synthetic_feeds: bool = False) -> None
     line_rows = _reconstruct_corridors(hubs, lines, junction_xy=junction_xy)
     edges = build_edges(hubs, lines, rows=line_rows)
     edges = merge_asserted_corridors(edges, hubs)
-    if not no_synthetic_feeds:
-        edges = add_synthetic_feeds(edges, hubs)
-    print(f"  {len(edges)} aggregated corridors")
-
+    # Generators are mapped before the synthetic feeds because a feed to a
+    # generation switchyard has to be sized to what injects there, and that is
+    # only known once the plants are snapped to hubs.
     print("Spatial join: WECC CA generators / storage -> nearest substation...")
     generators = map_wecc_generators(hubs)
+    if not no_synthetic_feeds:
+        edges = add_synthetic_feeds(edges, hubs, generators=generators)
+    print(f"  {len(edges)} aggregated corridors")
+
     print("Snapping named interties (Path 15 / 26 / 66 / Palo Verde)...")
     interties = map_interties(hubs)
     bess = candidate_bess(hubs)

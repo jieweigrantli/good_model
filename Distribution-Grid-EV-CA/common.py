@@ -645,3 +645,39 @@ def sce_substation_nodes():
     )
     j = j[j["d"] <= 2000.0]
     return {str(r[name_col]).strip().upper(): r["substation_id"] for _, r in j.iterrows()}
+
+
+# ---------------------------------------------------------------------------
+# Injection capacity per substation
+# ---------------------------------------------------------------------------
+# A wire out of a substation has to carry whatever injects there, so anything
+# that can push power onto the node counts. Getting this membership test wrong
+# is easy, because the GOOD v1 schema this model inherits represents variable
+# renewables as the ``Load`` class with a type of "solar" or "wind" rather than
+# as ``Producer`` -- they are profile-driven assets, and the class name refers
+# to how they enter the energy balance, not to which way the power flows. A
+# filter of ``class == "Producer"`` therefore silently drops all 1,041 CA solar
+# and wind records, which are exactly the assets sitting at the generation
+# switchyards whose export path this is used to size.
+#
+# Stores count at their power rating: a pump-hydro unit can inject its full
+# discharge capacity, and the limit is symmetric because it charges through the
+# same wire. ``optional`` records are excluded -- a capex candidate may never be
+# built, so sizing a wire to it would presume the expansion the model decides.
+VRE_LOAD_TYPES = ("solar", "wind")
+
+
+def injection_capacity_by_hub(records) -> dict[str, float]:
+    """hub_id -> W of firm injection capacity mapped to that substation."""
+    out: dict[str, float] = {}
+    for rec in records or []:
+        hid = rec.get("hub_id")
+        if not hid or rec.get("optional"):
+            continue
+        cls = rec.get("class")
+        if cls not in ("Producer", "Load", "Store"):
+            continue
+        if cls == "Load" and str(rec.get("type", "")).lower() not in VRE_LOAD_TYPES:
+            continue  # genuine demand; handled in 08_03
+        out[hid] = out.get(hid, 0.0) + float(rec.get("installed_capacity") or 0.0)
+    return out
