@@ -474,6 +474,24 @@ def _measured_base_profiles(sub_ids) -> tuple[np.ndarray, np.ndarray]:
     print(f"  measured base profiles: {int(have.sum()):,} substations "
           f"({n_pge:,} PG&E substation-level, {n_feed:,} PG&E feeder-aggregated, "
           f"{n_sce:,} SCE amps)")
+
+    # Record the measured peak per substation so 08_06 can test a published rating
+    # against it. A measured load is a harder fact than a published rating: where
+    # the two conflict, the rating is the one that cannot be right. SCE's GNA
+    # facility rating runs 0.74 of its ICA-derived capacity while its own amp-based
+    # load profile runs 0.82 of its projection, so at substations with little
+    # remaining capacity the rating lands *below* the load the same utility
+    # measures -- 13 substations carrying 101.7 GWh of transformer-bound shortfall.
+    # Writing it here rather than recomputing in 08_06 keeps one definition of what
+    # "measured" means.
+    out = pd.DataFrame({
+        "substation_id": np.asarray(sub_ids)[have],
+        "measured_peak_W": prof[have].max(axis=1),
+    })
+    C.ensure_dir(C.MESO_DIR)
+    out.to_csv(C.MESO_DIR / "measured_base_peak.csv", index=False)
+    print(f"    wrote {C.MESO_DIR / 'measured_base_peak.csv'} ({len(out):,} substations)")
+
     return prof, have
 
 

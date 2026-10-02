@@ -20,22 +20,20 @@ Sources, in precedence order:
   2. PG&E GRIP ``DFSubstationArea``: summed bank ratings (MVA) per substation
   3. SCE DRPEP ``GNA Substations``: published substation rating
   4. SCE DRPEP ``ICA Substations``: projected load + max remaining capacity
-  5. derived: assigned peak demand / TYPICAL_LOADING, so an unmeasured
+  5. SDG&E ICA: section headroom summed to the substation + projected load
+  6. derived: assigned peak demand / TYPICAL_LOADING, so an unmeasured
      substation is given the same headroom ratio as the measured median
 
-Sources 1 and 4 are the same identity, ``capacity = headroom + baseload``, in
-the two forms the utilities publish. Source 2 is kept only as a fallback: the
-bank sums contradict PG&E's own measurements badly enough at some substations
-(02201 sums to 9.88 MVA against a published 118.9 MW peak) that they cannot be
-treated as a substation rating.
+Sources 1, 4 and 5 are the same identity, ``capacity = headroom + baseload``, in
+the three forms the investor-owned utilities publish it, so all three IOUs now rest
+on their own published capacity data. Source 2 is kept only as a fallback: the bank
+sums contradict PG&E's own measurements badly enough at some substations (02201 sums
+to 9.88 MVA against a published 118.9 MW peak) that they cannot be treated as a
+substation rating, and where a neighbour proves the inventory incomplete they are
+demoted outright.
 
-A caution on TYPICAL_LOADING below, which source 5 depends on: 0.856 is the
-median across substations of the *maximum* bank loading at each substation, not
-a substation-level loading. The substation-level statistic,
-sum(bank load)/sum(bank rating), is 0.79. The docstring here previously quoted
-the max-of-banks figures ("median 85.6%, 41% above 90%, 19% above 100%") as
-though they described substations; the per-bank values are 79.7%, 32.1% and
-13.2%.
+Source 6 depends on ``TYPICAL_LOADING``; see the comment on that constant for its
+derivation across all three utilities and the 0.502 to 0.639 band it sits in.
 
 Writes:
   data/meso/substation_ratings.csv
@@ -230,6 +228,102 @@ def sce_ratings() -> pd.DataFrame:
     return pd.DataFrame({"substation_id": list(rows), "rating_W": list(rows.values())})
 
 
+SDGE_DIR = C.DATA_DIR / "ica" / "sdge"
+
+
+def sdge_ratings(section_agg: str = "max") -> pd.DataFrame:
+    """SDG&E substation capacity as ``ICA section headroom + projected load``.
+
+    The same identity 08_12 applies to PG&E, on the dataset 08_16 downloads. SDG&E
+    publishes its whole ICA as open ArcGIS feature services, so this needs no data
+    request:
+
+    * ``Load Capacity Grids`` -- 501,409 line sections, each with
+      ``ICAWOF_UNILOAD`` (load integration capacity, MW), ``CIRCUIT_NAME`` and
+      ``SUBID``. Sections aggregate to a feeder and feeders sum to a substation,
+      exactly as in PG&E's ICA.
+    * ``Substations`` -- 107 substations with ``PROJ_LOAD`` and polygon geometry.
+
+    ``SUBID`` is the substation *name*, and SDG&E's 167 nodes in this model are all
+    HIFLD-sourced with no utility identity, so the join runs through geometry the way
+    ``_sce_name_to_node`` does for SCE: SDG&E's own substation centroid to the nearest
+    HIFLD node within 2 km. The service returns Web Mercator, so the stored lon/lat
+    are EPSG:3857 and are reprojected here.
+
+    An unfitted cross-check worth keeping: ``PROJ_LOAD`` sums to 4,997 MW against the
+    ~5,300 MW this model already allocates to SDG&E, 6% agreement from two unrelated
+    derivations.
+
+    ``section_agg`` mirrors 08_12's ``--section-agg``. Headroom at a section includes
+    upstream impedance, so the section nearest the substation is the bank-relevant
+    one and ``max`` is the default; the choice is flagged as high-risk in the
+    specification because it moves the result materially.
+    """
+    lca_path = SDGE_DIR / "load_capacity.parquet"
+    sub_path = SDGE_DIR / "substations.parquet"
+
+    if not (lca_path.is_file() and sub_path.is_file()):
+        print("  SDG&E ICA missing (run 08_16); skipping")
+        return pd.DataFrame(columns=["substation_id", "rating_W"])
+
+    if not C.HIFLD_SUBSTATIONS_GPKG.is_file():
+        print("  SDG&E: HIFLD substation layer missing; skipping")
+        return pd.DataFrame(columns=["substation_id", "rating_W"])
+
+    lca = pd.read_parquet(lca_path, columns=["SUBID", "CIRCUIT_NAME", "ICAWOF_UNILOAD"])
+    lca["ICAWOF_UNILOAD"] = pd.to_numeric(lca["ICAWOF_UNILOAD"], errors="coerce")
+    per_feeder = (
+        lca.dropna(subset=["ICAWOF_UNILOAD"])
+        .groupby(["SUBID", "CIRCUIT_NAME"], as_index=False)["ICAWOF_UNILOAD"]
+        .agg(section_agg)
+    )
+    headroom = (
+        per_feeder.groupby("SUBID", as_index=False)["ICAWOF_UNILOAD"]
+        .sum()
+        .rename(columns={"ICAWOF_UNILOAD": "headroom_MW"})
+    )
+    headroom["key"] = headroom["SUBID"].astype(str).str.strip().str.upper()
+
+    subs = pd.read_parquet(sub_path)
+    subs["key"] = subs["NAME"].astype(str).str.strip().str.upper()
+    subs["PROJ_LOAD"] = pd.to_numeric(subs["PROJ_LOAD"], errors="coerce")
+
+    df = subs.merge(headroom[["key", "headroom_MW"]], on="key", how="inner")
+    df = df[df["PROJ_LOAD"].notna() & (df["PROJ_LOAD"] > 0)]
+
+    if df.empty:
+        print("  SDG&E: no substation matched both headroom and projected load")
+        return pd.DataFrame(columns=["substation_id", "rating_W"])
+
+    # SDG&E centroids (Web Mercator) -> nearest HIFLD node, the way SCE is joined.
+    pts = gpd.GeoDataFrame(
+        df[["key", "headroom_MW", "PROJ_LOAD"]],
+        geometry=gpd.points_from_xy(df["lon"], df["lat"]),
+        crs="EPSG:3857",
+    ).to_crs(C.CA_ALBERS_CRS)
+
+    hif = gpd.read_file(C.HIFLD_SUBSTATIONS_GPKG).to_crs(C.CA_ALBERS_CRS)
+    hif["substation_id"] = "HIFLD_" + hif["OBJECTID"].astype(str)
+    j = gpd.sjoin_nearest(pts, hif[["substation_id", "geometry"]], how="left",
+                          distance_col="d")
+    far = int((j["d"] > 2000.0).sum())
+    j = j[j["d"] <= 2000.0]
+
+    j["rating_W"] = (j["headroom_MW"] + j["PROJ_LOAD"]) * 1e6
+    below = int((j["rating_W"] < MIN_RATING_W).sum())
+    j = j[j["rating_W"] >= MIN_RATING_W]
+
+    out = (
+        j.groupby("substation_id", as_index=False)["rating_W"].max()
+        if len(j) else pd.DataFrame(columns=["substation_id", "rating_W"])
+    )
+    print(f"  SDG&E ICA: {len(out):,} substations from section headroom + projected load "
+          f"(agg={section_agg}"
+          + (f", {far:,} beyond the 2 km join" if far else "")
+          + (f", {below:,} below {MIN_RATING_W / 1e6:.0f} MW" if below else "") + ")")
+    return out[["substation_id", "rating_W"]]
+
+
 def pge_ica_ratings() -> pd.DataFrame:
     """PG&E capacity as ``ICA headroom + measured baseload``, from 08_12.
 
@@ -264,6 +358,62 @@ def pge_ica_ratings() -> pd.DataFrame:
 # much is taken as proof that the bank inventory in that cluster is incomplete.
 BANK_SUM_PROOF_FACTOR = 2.0
 BANK_SUM_PROOF_RADIUS_M = 8000.0
+
+
+def _demote_below_measured_load(df):
+    """Discard a published rating that falls below the substation's own measured load.
+
+    A measured load is a harder fact than a published rating. If a utility's own
+    metering says a substation carries 100 MW and its own planning data rates it at
+    88 MW, the rating is the number that cannot be right -- the substation is
+    demonstrably carrying that load. Using it anyway makes the node infeasible on
+    its own demand and it sheds load in every hour of the horizon, which reads as
+    congestion rather than as a contradiction between two published datasets.
+
+    This is where SCE's two datasets disagree. GNA's facility rating runs a median
+    0.74 of the ICA-derived capacity, while SCE's amp-based load profile runs a
+    median 0.82 of its own projection, so wherever ``MAX_REMAIN_CAP`` is small the
+    rating lands below the measured load. 13 of 131 GNA-rated substations were
+    affected, carrying 101.7 GWh -- 60% of SCE's transformer-bound shortfall and
+    about half of the 206 GWh total at three-IOU scope.
+
+    Why not an emergency rating instead. Real transformers do run above nameplate:
+    PG&E records 13.2% of banks above 100% with a p95 of 113%, and SCE records
+    facility loading to 114%. But IEEE C57.91 emergency ratings are duration-limited,
+    typically four hours with up to 5% loss of transformer life, and these nodes are
+    short in 672 of 672 hours. A flat multiplier over the whole horizon would invent
+    a loading category the standard does not have, and would mask the data conflict
+    rather than resolve it.
+
+    The test is deliberately against *measured* load only, never the allocated peak.
+    Allocation is the weaker side of the comparison and is corrected in 08_03
+    instead; demoting on an allocated peak would let an allocation error silently
+    rewrite a published rating.
+    """
+    path = C.MESO_DIR / "measured_base_peak.csv"
+
+    if not path.is_file():
+        print("  measured-load demotion: measured_base_peak.csv missing (run 08_03); skipped")
+        return pd.Series(False, index=df.index)
+
+    meas = pd.read_csv(path)
+    meas["substation_id"] = meas["substation_id"].astype(str)
+    peak = meas.set_index("substation_id")["measured_peak_W"]
+
+    m = df["substation_id"].astype(str).map(peak)
+    hit = df["rating_W"].notna() & m.notna() & (df["rating_W"] < m)
+
+    if not hit.any():
+        print("  measured-load demotion: no published rating falls below its measured load")
+        return pd.Series(False, index=df.index)
+
+    shortfall_ratio = (df.loc[hit, "rating_W"] / m[hit])
+    df.loc[hit, "rating_W"] = np.nan
+    print(f"  measured-load demotion: {int(hit.sum()):,} published ratings fall below the "
+          f"substation's own measured load and are demoted to derived "
+          f"(rating/measured: median {shortfall_ratio.median():.2f}, "
+          f"worst {shortfall_ratio.min():.2f})")
+    return hit
 
 
 def _demote_proven_incomplete_bank_sums(df, ica_ids, nodes):
@@ -366,6 +516,12 @@ def main() -> None:
     ap.add_argument("--typical-loading", type=float, default=TYPICAL_LOADING)
     ap.add_argument("--no-ica", action="store_true",
                     help="Ignore the PG&E ICA capacities and use GNA bank sums only.")
+    ap.add_argument("--section-agg", default="max", choices=["max", "median", "min"],
+                    help="How SDG&E ICA line sections aggregate to a feeder. Mirrors "
+                         "08_12's flag for PG&E. max is the default because headroom at "
+                         "a section includes upstream impedance, so the section nearest "
+                         "the substation is the bank-relevant one; the choice moves the "
+                         "result materially and is flagged in the specification.")
     args = ap.parse_args()
 
     nodes_csv = C.MESO_DIR / "meso_nodes.csv"
@@ -377,7 +533,7 @@ def main() -> None:
     # Order matters: drop_duplicates keeps the first, so the ICA identity wins
     # over the GNA bank sums wherever both exist.
     sources = [] if args.no_ica else [pge_ica_ratings()]
-    sources += [pge_ratings(), sce_ratings()]
+    sources += [pge_ratings(), sce_ratings(), sdge_ratings(args.section_agg)]
     published = pd.concat(sources, ignore_index=True)
     published = published.drop_duplicates("substation_id")
 
@@ -395,13 +551,14 @@ def main() -> None:
     # treatment, so they are separated before any rating is derived.
     df["below_assigned_peak"] = df["rating_W"] < df["total_peak_W"]
     demoted = _demote_proven_incomplete_bank_sums(df, ica_ids, nodes)
+    demoted = demoted | _demote_below_measured_load(df)
 
     derived = df["rating_W"].isna()
     df.loc[derived, "rating_W"] = np.maximum(
         df.loc[derived, "total_peak_W"] / max(args.typical_loading, 1e-6),
         MIN_RATING_W,
     )
-    df.loc[demoted, "rating_source"] = "derived_bank_sum_incomplete"
+    df.loc[demoted, "rating_source"] = "derived_rating_not_usable"
     # Recomputed after demotion, so the flag describes the ratings actually used.
     df["below_assigned_peak"] = df["rating_W"] < df["total_peak_W"]
 
@@ -419,7 +576,8 @@ def main() -> None:
           f"{(df.loc[ok, 'total_peak_W'] / df.loc[ok, 'rating_W']).median():.2f}")
     print(f"  nodes whose rating is still below assigned peak: "
           f"{int(df['below_assigned_peak'].sum()):,} "
-          f"({int(demoted.sum()):,} demoted to derived on proven-incomplete bank sums)")
+          f"({int(demoted.sum()):,} ratings discarded as not usable: incomplete bank "
+          f"inventory, or below the substation's own measured load)")
 
 
 if __name__ == "__main__":
