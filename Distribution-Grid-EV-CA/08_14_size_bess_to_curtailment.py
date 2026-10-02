@@ -74,12 +74,20 @@ def main() -> None:
                     help="Stop adding nodes once the fleet reaches this power. "
                          "Default: no cap, size every spilling node.")
     ap.add_argument("--min-mw", type=float, default=1.0)
-    ap.add_argument("--min-free-hours", type=int, default=1,
-                    help="Skip nodes that spill in every hour. A battery there can "
-                         "charge but never discharge, so building it is pure waste: "
-                         "SUB_18295 and SUB_04314 hold 1,909 GWh (92%% of all "
-                         "curtailment) and have hours_free = 0.")
+    ap.add_argument("--min-free-hours", type=int, default=None,
+                    help="Skip nodes with fewer free hours than this. Defaults to "
+                         "--duration-h, because a battery needs at least its own "
+                         "duration in non-spilling hours to complete a single "
+                         "discharge; below that it can charge and never deliver. The "
+                         "previous default of 1 excluded only the hours_free = 0 case "
+                         "and let a worse one through: at three-IOU scope SUB_HIFLD_2620 "
+                         "and SUB_HIFLD_4169 spill in 671 of 672 hours with hours_free = 1, "
+                         "and between them hold 361 GWh -- 51%% of all substation spill -- "
+                         "so they claimed 983 MW of a 3,200 MW fleet while contributing "
+                         "1.0 GWh of reachable energy.")
     args = ap.parse_args()
+    if args.min_free_hours is None:
+        args.min_free_hours = int(max(1, round(args.duration_h)))
 
     path = C.ASTR_RESULTS_DIR / args.tag / args.scenario / "wastage_by_node.csv"
     if not path.is_file():
