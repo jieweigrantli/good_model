@@ -340,6 +340,35 @@ def _line_parts(geom):
 GEN_SWITCHYARD_MIN_MW = 100.0
 GEN_SWITCHYARD_RADIUS_M = 2000.0
 
+# Snapping a plant to the nearest substation, with no regard for whether that
+# substation could carry it, put 1,681 MW of Tehachapi wind onto two unnamed
+# HIFLD points at up to 4.7 km, inside a pocket whose only egress is two 80 MW
+# corridors. SCE's own circuit inventory confirms the pocket: every circuit that
+# touches those nodes is 66 kV subtransmission, and the nearest 220 kV
+# transmission circuit is 2.9 km away. So the corridors were right and the
+# assignment was wrong -- the real farms collect at Arbwind (230 kV) and
+# Highwind (220 kV), both of which the model already holds as nodes.
+#
+# The discriminator is distance, not voltage. A plant within GEN_SNAP_OWN_YARD_M
+# of a substation is standing at its own switchyard, and that assignment is sound
+# whatever HIFLD says the voltage is -- Otay Mesa at 883 m, GWF Tracy at 68 m and
+# Devil Canyon at 82 m are all the plant's own yard, and a voltage test alone
+# wrongly relocates every one of them. Past that radius the nearest node is not
+# the plant's yard but whatever HIFLD happened to place closest, because HIFLD
+# does not contain the collector yard at all; there, voltage decides.
+#
+# Applied to plants at or above GEN_SWITCHYARD_MIN_MW this moves 20 plant-sites
+# and 3,409 MW, and leaves the 109 large sites already sitting on an adequate
+# substation untouched.
+GEN_SNAP_OWN_YARD_M = 1000.0
+GEN_SNAP_MAX_M = 15000.0
+# Tolerance for attributing an SCE circuit's published voltage to a substation
+# its geometry passes. 250 m sits on the flat part of the measured snap
+# distribution: 150 m resolves 205 of the 541 unknown-voltage substations, 250 m
+# resolves 219 and 500 m only 237, so the gain past 250 m is small and bought with
+# twice the radius.
+SCE_VOLTAGE_FILL_M = 250.0
+
 
 def generation_switchyards(all_records: gpd.GeoDataFrame) -> set[str]:
     """substation_ids that are the switchyard of a large power plant.
@@ -1070,6 +1099,131 @@ def load_transmission_lines(hubs: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
+def _hub_voltage_with_sce_fill(hubs: gpd.GeoDataFrame) -> np.ndarray:
+    """Per-hub voltage in kV, HIFLD first, SCE's circuit inventory second.
+
+    HIFLD leaves 541 of 3,104 substations with no voltage at all, and the
+    Tehachapi collector yards are among them, so a voltage test on HIFLD alone
+    cannot see the very nodes it needs to judge. SCE publishes a voltage on every
+    transmission and subtransmission circuit, so a circuit whose geometry passes
+    within ``SCE_VOLTAGE_FILL_M`` of a substation attributes its voltage to it --
+    the highest, where several pass. That resolves 219 of the 541, taking coverage
+    from 82.6% to 89.6%.
+
+    This fill is deliberately local to the generator snap and is NOT written back
+    onto ``hubs``. ``site_kv`` also gates mid-span line splitting and corridor
+    endpoint snapping in ``_reconstruct_corridors``, where a substation of unknown
+    voltage is treated permissively; giving 219 substations a voltage would change
+    which lines may terminate there and so rebuild the topology. That may well be
+    an improvement, but it is a separate change with its own evidence to weigh,
+    and folding it in here would make this one unattributable.
+    """
+    kv = pd.to_numeric(hubs.get("site_kv"), errors="coerce")
+    if "max_kv" in hubs.columns:
+        kv = kv.fillna(pd.to_numeric(hubs["max_kv"], errors="coerce"))
+    kv = kv.to_numpy(dtype=float)
+    circuits = C.DATA_DIR / "ica" / "sce" / "transmission_circuits.gpkg"
+    miss = np.isnan(kv)
+    if not miss.any() or not circuits.is_file():
+        return kv
+    sc = gpd.read_file(circuits).to_crs(hubs.crs)
+    sc["_kv"] = pd.to_numeric(sc["CIRCUIT_VOLTAGE"], errors="coerce")
+    sc = sc[sc["_kv"].notna()]
+    if sc.empty:
+        return kv
+    probe = hubs.loc[miss, ["hub_id", "geometry"]].copy()
+    j = gpd.sjoin_nearest(probe, sc[["_kv", "geometry"]], how="left",
+                          distance_col="_d", max_distance=SCE_VOLTAGE_FILL_M)
+    got = j.dropna(subset=["_kv"]).groupby("hub_id")["_kv"].max()
+    if len(got):
+        pos = {h: i for i, h in enumerate(hubs["hub_id"].to_numpy())}
+        for h, v in got.items():
+            kv[pos[h]] = float(v)
+        print(f"  substation voltage: {int(np.isfinite(kv).sum())}/{len(kv)} known "
+              f"({len(got)} filled from SCE circuit voltages within "
+              f"{SCE_VOLTAGE_FILL_M:.0f} m)")
+    return kv
+
+
+def _collector_kv_for(mw: float) -> float:
+    """Lowest voltage in C.KV_TO_MVA whose single circuit could carry ``mw``."""
+    for kv, mva in sorted(C.KV_TO_MVA.items()):
+        if mva >= mw:
+            return float(kv)
+    return float(max(C.KV_TO_MVA))
+
+
+def _resnap_large_plants_by_voltage(joined: pd.DataFrame,
+                                    hubs: gpd.GeoDataFrame) -> pd.DataFrame:
+    """Move large plants off substations that could not collect them.
+
+    Works on plant *sites* -- all units at one coordinate are one plant, the same
+    grouping ``generation_switchyards`` uses -- so a multi-unit plant moves whole
+    rather than splitting across substations. A site stays where it is if it is
+    within ``GEN_SNAP_OWN_YARD_M`` (its own switchyard), if it is below
+    ``GEN_SWITCHYARD_MIN_MW``, or if no substation within ``GEN_SNAP_MAX_M`` has a
+    voltage able to collect it. The last case is reported rather than forced: 30
+    sites and 7,939 MW have no adequate substation in reach, and inventing one
+    would be worse than recording that the data does not place them.
+    """
+    from scipy.spatial import cKDTree
+
+    if not {"lon", "lat"} <= set(joined.columns):
+        return joined
+    mw = pd.to_numeric(joined["installed_capacity"], errors="coerce").fillna(0.0) / 1e6
+    firm = ~joined["optional"].astype(bool)
+    site = list(zip(joined["lon"].round(5), joined["lat"].round(5)))
+    joined = joined.assign(_site=site)
+    site_mw = mw.where(firm, 0.0).groupby(joined["_site"]).sum()
+
+    kv = _hub_voltage_with_sce_fill(hubs)
+    hx, hy = hubs.geometry.x.to_numpy(), hubs.geometry.y.to_numpy()
+    hid = hubs["hub_id"].to_numpy()
+    sid = hubs["substation_id"].to_numpy()
+    tree = cKDTree(np.column_stack([hx, hy]))
+
+    geom = joined.geometry
+    moves: dict[tuple, tuple[int, float]] = {}
+    unreachable: list[tuple[tuple, float]] = []
+    for s, total in site_mw.items():
+        if total < GEN_SWITCHYARD_MIN_MW:
+            continue
+        g = geom[joined["_site"] == s].iloc[0]
+        if not (np.isfinite(g.x) and np.isfinite(g.y)):
+            continue
+        need = _collector_kv_for(float(total))
+        d, i = tree.query((g.x, g.y), k=int(min(len(hubs), 40)))
+        d, i = np.atleast_1d(d), np.atleast_1d(i)
+        if float(d[0]) <= GEN_SNAP_OWN_YARD_M:
+            continue  # the plant's own switchyard
+        for dd, ii in zip(d, i):
+            if dd > GEN_SNAP_MAX_M:
+                unreachable.append((s, float(total)))
+                break
+            k = kv[int(ii)]
+            if np.isfinite(k) and k + 1e-9 >= need:
+                if hid[int(ii)] != joined.loc[joined["_site"] == s, "hub_id"].iloc[0]:
+                    moves[s] = (int(ii), float(dd))
+                break
+
+    if moves:
+        sel = joined["_site"].isin(moves)
+        tgt = joined.loc[sel, "_site"].map(lambda s: moves[s][0])
+        joined.loc[sel, "hub_id"] = hid[tgt.to_numpy()]
+        joined.loc[sel, "substation_id"] = sid[tgt.to_numpy()]
+        joined.loc[sel, "snap_m"] = joined.loc[sel, "_site"].map(lambda s: moves[s][1]).to_numpy()
+        moved_mw = sum(site_mw[s] for s in moves)
+        dists = [v[1] for v in moves.values()]
+        print(f"  {len(moves)} plant-sites ({moved_mw:,.0f} MW) re-snapped to a substation "
+              f"that can collect them (median {np.median(dists):,.0f} m, "
+              f"max {max(dists):,.0f} m)")
+    if unreachable:
+        tot = sum(v for _, v in unreachable)
+        print(f"  {len(unreachable)} plant-sites ({tot:,.0f} MW) have no substation within "
+              f"{GEN_SNAP_MAX_M / 1000:.0f} km rated to collect them; left on the nearest node")
+    return joined.drop(columns=["_site"])
+
+
 def map_wecc_generators(hubs: gpd.GeoDataFrame) -> list[dict]:
     path = C.resolve_wec_json()
     with open(path, encoding="utf-8") as fh:
@@ -1121,6 +1275,7 @@ def map_wecc_generators(hubs: gpd.GeoDataFrame) -> list[dict]:
             joined = joined.drop_duplicates(subset=subset, keep="first")
         else:
             joined = joined.drop_duplicates(subset=["handle"], keep="first")
+        joined = _resnap_large_plants_by_voltage(joined, hubs)
         for _, r in joined.iterrows():
             mapped.append(
                 {

@@ -1002,8 +1002,48 @@ mistake and freed only 2.74 GW. The test now lives in one place,
 a capex candidate may never be built and sizing a wire to it would presume the
 expansion the model is meant to decide.
 
+**Under the feed floor sat a second fault: generators snapped to substations that
+could not collect them.** Re-running with the feeds corrected cut spill by 301 GWh,
+but `SUB_HIFLD_3316` and `SUB_HIFLD_2620` still spilled 530 GWh between them. Their
+feeds were now 870 MW and 811 MW as intended; the constraint had moved one hop out,
+to a pocket of 66 kV substations — `Goldtown`, `Corum` — whose only egress is two
+80 MW inferred corridors against 1,179 MW of generation inside.
+
+The 80 MW is not the error. SCE's circuit inventory puts a **66 kV subtransmission**
+circuit within 33 m of `SUB_HIFLD_3316`, 136 m of `SUB_HIFLD_3901` and 25 m of
+`SUB_HIFLD_3900`, with the nearest 220 kV transmission circuit 2.9 km away and not
+touching any of them. The corridors are right and the pocket really is
+subtransmission. What was wrong is that **1,681 MW of wind across 25 farms had been
+snapped onto two unnamed HIFLD points at up to 4.7 km**, inside it. The real
+Tehachapi farms collect at `Arbwind` (230 kV) and `Highwind` (220 kV), both of which
+the model already held as nodes, `Arbwind` with a 4,963 MW BA interface.
+
+The discriminator is distance, not voltage. A plant within `GEN_SNAP_OWN_YARD_M`
+(1 km) of a substation is standing at its own switchyard, and that assignment is
+sound whatever HIFLD says the voltage is: a voltage test alone relocates `Otay Mesa`
+at 883 m, `GWF Tracy` at 68 m and `Devil Canyon` at 82 m, which are all the plant's
+own yard — 48 sites and 10,773 MW moved, most of them wrongly. Past 1 km the nearest
+node is not the plant's yard but whatever HIFLD happened to place closest, because
+HIFLD does not contain the collector yard at all. Gating on own-yard distance first
+and voltage second moves **20 plant-sites and 3,409 MW** and leaves the 109 large
+sites already on an adequate substation alone.
+
+Two supporting points. HIFLD leaves 541 of 3,104 substations with no voltage, the
+Tehachapi yards among them, so the test would be blind to the nodes it has to judge;
+SCE publishes a voltage on every circuit, and attributing it to a substation whose
+geometry a circuit passes within 250 m resolves 219 of the 541, lifting coverage from
+82.6% to 89.6% (150 m gives 205 and 500 m only 237, so the gain past 250 m is small).
+That fill is deliberately **local to the generator snap and is not written back onto
+`hubs`**, because `site_kv` also gates mid-span line splitting and corridor endpoint
+snapping, where unknown voltage is treated permissively — giving 219 substations a
+voltage would rebuild the topology, which may be an improvement but is a separate
+change with its own evidence to weigh. And 30 plant-sites totalling 7,939 MW have no
+adequate substation within 15 km; those are reported and left on the nearest node
+rather than forced somewhere, because inventing a collector yard would be worse than
+recording that the data does not place them.
+
 **The network build was not reproducible, and that was found by trying to measure
-the fix above.** Diffing the rebuilt network against the previous one showed the
+the feed fix.** Diffing the rebuilt network against the previous one showed the
 synthetic feeds changing as intended — and sixteen unrelated corridors moving as
 well. Building twice from identical inputs confirmed it: 4,947 edges against 4,946,
 different edge sets, identical capacities. The links that moved were all between
