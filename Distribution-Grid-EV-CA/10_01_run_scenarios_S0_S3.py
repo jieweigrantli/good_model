@@ -1192,12 +1192,21 @@ def run_horizon(
             curtailment = _vre_curtailment(solution, built_graph, time_step)
             sfw = _shortfall_wastage_totals(solution, time_step, curtailment)
             (scen_dir / "shortfall_wastage.json").write_text(json.dumps(sfw, indent=2), encoding="utf-8")
+            # Both tables are written even when empty. Skipping the write left the
+            # previous run's table in place whenever a scenario reached zero: S4
+            # solved to 0.000 GWh of shortfall and its directory still listed three
+            # Merced substations short by 4.06 GWh from the run before.
             sbn = _shortfall_by_node(solution, time_step)
-            if not sbn.empty:
-                sbn.to_csv(scen_dir / "shortfall_by_node.csv", index=False)
+            if sbn.empty:
+                sbn = pd.DataFrame(columns=["node", "shortfall_MWh", "shortfall_GWh", "peak_MW",
+                                            "hours_short", "longest_run_h", "longest_run_MWh"])
+            sbn.to_csv(scen_dir / "shortfall_by_node.csv", index=False)
             wbn = _wastage_by_node(solution, time_step, curtailment)
-            if not wbn.empty:
-                wbn.to_csv(scen_dir / "wastage_by_node.csv", index=False)
+            if wbn.empty:
+                wbn = pd.DataFrame(columns=["node", "wastage_MWh", "wastage_GWh", "peak_MW", "mean_MW",
+                                            "hours_spilling", "hours_free", "longest_run_h",
+                                            "longest_run_MWh"])
+            wbn.to_csv(scen_dir / "wastage_by_node.csv", index=False)
             print(
                 f"  shortfall={sfw['shortfall_GWh']:.3f} GWh "
                 f"({sfw['shortfall_MWh']*float(network_kw.get('shortfall_cost') or 0):.3e} $)  "
