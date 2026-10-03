@@ -1042,6 +1042,70 @@ adequate substation within 15 km; those are reported and left on the nearest nod
 rather than forced somewhere, because inventing a collector yard would be worse than
 recording that the data does not place them.
 
+**Substations short in every hour were an artifact of the BA restriction, not a
+structural floor.** In the three-IOU S1, 17 substations were short in all 672 hours
+and carried 74.6 of 153.3 GWh. Sixteen of them trace to one fault in
+`_restrict_network` (`09_02`), in two steps.
+
+Restricting the model to a subset of balancing areas cuts every corridor that runs to
+a substation outside it. That islanded 26 components, 46 substations, all in or beside
+the territory of a utility outside the three IOUs — Merced Irrigation District,
+PacifiCorp in Del Norte County, Lodi, Burbank, LADWP, Redding — whose real corridors
+lead into BANC or LADWP. HIFLD's `Owner` field and the CEC territory polygon agree on
+this for every one. The islands were then handed a gateway to their own BA bus, sized
+from `total_peak_W` on the node records. **The network file does not carry that key**,
+so every peak read as zero and every islanded load component got the 5 MW floor:
+4.85 MW after line losses, below the minimum hourly load of the components it fed.
+`WINDSOR`, a PG&E substation with measured load, received exactly 4.85 MW in every
+hour.
+
+| | shortfall in islanded components | share of scenario total |
+|---|---:|---:|
+| S0 | 57.20 GWh | 47% |
+| S1 | 63.18 GWh | 41% |
+| S3 | 4.07 GWh | 10% |
+| S4 | 4.06 GWh | 100% |
+
+Three statements made earlier in this document and in the results summaries were
+wrong because of it, and are withdrawn. The S4 residual of 4.057 GWh, cited as an
+anchor that held across five runs, was the four Merced substations behind one gateway;
+it was stable because the same fault reproduced each time. The reading of the S0
+residual as "topology, not capacity — a structural floor" was about half this fault.
+And P_cong was contaminated: S3 scales the gateway tenfold along with the corridors,
+so roughly 59 of the 113.6 GWh of shortfall it "relieved" was the artifact. The bias
+runs towards *understating* P_cong, because a correct S1 serves that load and emits
+more.
+
+The seventeenth node, `SUB_HIFLD_972` (Wabash, SDG&E), is a different thing: it sits
+in the main network behind 240 MW of corridors, and its published rating of 16.9 MW is
+below an allocated load of 28 to 72 MW. SDG&E publishes no substation load, so nothing
+arbitrates between the two numbers. That is a data conflict and stays in the results.
+
+The fix makes no sizing decision. The severed corridors are in the data, so they are
+kept; only the far end moves, from a substation that is out of scope to the bus of its
+balancing area, which is how every non-nested area is already represented. 26
+components reconnect through 28 arcs totalling 2,009 MW, 14 to `WEC_BANC` and 14 to
+`WEC_LADW`, and in every one the restored capacity exceeds peak load without having
+been sized to it. This is done for islanded components only: the restriction also
+cuts 209 corridors (52 GW) attached to the main network, and re-terminating those on
+a copper plate would open zero-impedance paths around congested corridors and
+understate P_cong. An island has no second connection, so no such loop can form.
+
+With the fault separated out, what creates the remaining 90.1 GWh of S1 shortfall,
+classified hour by hour from the solved flows:
+
+| what binds in the short hour | nodes | GWh |
+|---|---:|---:|
+| upstream — own transformer and wires have slack, a limit further out binds | 34 | 49.49 |
+| transformer — net import at the bank rating | 65 | 34.34 |
+| own corridors — every inbound arc at its rating | 24 | 6.25 |
+
+Of the transformer-bound 34.34 GWh, 28.33 sits on 11 nodes whose *published* rating is
+below an *allocated* load (median rating over peak 0.68), the Wabash pattern, and
+under 1 GWh is measured load exceeding an ICA rating at peak once `SUB_15376` is set
+aside — that node carries 4.97 GWh on an ICA rating at 0.33 of its measured peak and
+should have been caught by the rating check.
+
 **The network build was not reproducible, and that was found by trying to measure
 the feed fix.** Diffing the rebuilt network against the previous one showed the
 synthetic feeds changing as intended — and sixteen unrelated corridors moving as
