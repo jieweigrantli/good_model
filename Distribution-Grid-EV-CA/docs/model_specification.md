@@ -1091,20 +1091,61 @@ cuts 209 corridors (52 GW) attached to the main network, and re-terminating thos
 a copper plate would open zero-impedance paths around congested corridors and
 understate P_cong. An island has no second connection, so no such loop can form.
 
-With the fault separated out, what creates the remaining 90.1 GWh of S1 shortfall,
-classified hour by hour from the solved flows:
+Re-solved with the islands reconnected, all five certified optimal:
+
+| | CO2 Mt | shortfall GWh | spill GWh |
+|---|---:|---:|---:|
+| S0 | 6.1940 | 65.004 | 304.10 |
+| S1 | 6.7182 | 90.095 | 303.56 |
+| S2 | 6.7219 | 84.192 | 301.57 |
+| S3 | 6.6043 | 35.644 | 74.17 |
+| S4 | 6.6216 | 0.000 | 74.17 |
+
+S1 landed at 90.10 GWh against 90.08 predicted from removing the islanded components,
+and one substation rather than seventeen is short in every hour. Spill is unchanged in
+all five, since the fix touched only the load side. **S4 is exactly zero**: with
+corridors and transformers both relaxed every substation is fully served, so the whole
+of S1's shortfall is attributable to one limit or the other — 54.45 GWh relieved by
+corridors alone, 35.64 GWh transformer-bound. P_cong is 113,879 t (was 99,447) and
+P_cong' 96,568 t. P_cong rose because S1 now serves 63 GWh it used to shed, and
+serving load emits.
+
+The same mechanism governs M_BESS, which is −3,668 t. S2 serves 5.90 GWh more than S1,
+at 621 kg of CO2 per additional MWh, so the sign reflects delivered energy and not
+storage. As a raw S1 − S2 difference the metric penalises any fleet that relieves
+shortfall; it needs an equal-delivered-energy basis before it is reported.
+
+This run also exposed a stale-output hazard in `10_01`: the per-node shortfall and
+wastage tables were written only when non-empty, so S4 solved to zero and its
+directory still listed three Merced substations short by 4.06 GWh from the run
+before. Both tables are now always written.
+
+What creates the 90.1 GWh of S1 shortfall, classified hour by hour from the solved
+flows:
 
 | what binds in the short hour | nodes | GWh |
 |---|---:|---:|
-| upstream — own transformer and wires have slack, a limit further out binds | 34 | 49.49 |
-| transformer — net import at the bank rating | 65 | 34.34 |
-| own corridors — every inbound arc at its rating | 24 | 6.25 |
+| upstream — own transformer and wires have slack, a limit further out binds | 36 | 49.49 |
+| transformer — net import at the bank rating | 67 | 34.35 |
+| own corridors — every inbound arc at its rating | 25 | 6.25 |
 
-Of the transformer-bound 34.34 GWh, 28.33 sits on 11 nodes whose *published* rating is
-below an *allocated* load (median rating over peak 0.68), the Wabash pattern, and
-under 1 GWh is measured load exceeding an ICA rating at peak once `SUB_15376` is set
-aside — that node carries 4.97 GWh on an ICA rating at 0.33 of its measured peak and
-should have been caught by the rating check.
+The transformer share is mostly a data conflict. Of the 35.64 GWh that remains in S3,
+29.61 sits on 13 nodes whose *published* rating is below an *allocated* load (median
+rating over peak 0.71), the Wabash pattern. Where load is measured the overload is
+6.03 GWh on 57 nodes, and 4.97 of that is `SUB_15376`, whose ICA rating is 0.33 of its
+measured peak and should have been caught by the rating check.
+
+127 of the 128 short substations have hours with headroom. Because `Region-transformer`
+caps net import over lines and a Store is an injection rather than an import, a
+substation battery sits behind both the transformer and the corridor limit: it charges
+through them in a headroom hour and discharges to local load without passing through
+either. An ideal battery could shift up to 45.99 GWh within the same day (51% of the
+shortfall) on 64 substations with about 1,237 MW / 6,618 MWh, 40.75 GWh of it at the
+upstream-bound nodes, which are short for a median of 40 hours. The bound uses each
+node's local headroom and overstates where the limit is upstream. No substation has
+both spill and shortfall, which is why the curtailment-sited fleet recovers 2.0 of
+229.4 GWh: the spill sits in pockets whose own load is already met and whose exit is
+the binding limit.
 
 **The network build was not reproducible, and that was found by trying to measure
 the feed fix.** Diffing the rebuilt network against the previous one showed the
