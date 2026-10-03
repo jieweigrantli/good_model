@@ -959,6 +959,7 @@ def run_horizon(
     no_capex: bool = False,
     bess_csv: Path | None = None,
     line_csv: Path | None = None,
+    out_suffix: str | None = None,
 ) -> pd.DataFrame:
     import good
     from good import migrate
@@ -1097,6 +1098,11 @@ def run_horizon(
         scen_out_name = scen
         if scen_bess_override is not None:
             scen_out_name = f"{scen}_bess{bess_congestion_frac*100:.0f}pct"
+        if out_suffix:
+            # A variant of a scenario (a different prescribed fleet, say) gets
+            # its own directory and summary row, so it cannot overwrite the
+            # reference run it is compared against.
+            scen_out_name = f"{scen_out_name}_{out_suffix}"
         scen_dir = C.ensure_dir(out_root / scen_out_name)
 
         if crossover == "auto":
@@ -1398,6 +1404,13 @@ def main() -> None:
              "multiplying every corridor by ten. Use with --scenarios S5.",
     )
     parser.add_argument(
+        "--out-suffix",
+        default=None,
+        help="Write each scenario to '<scenario>_<suffix>' instead of '<scenario>', and "
+             "record it under that name. For variants of a scenario, such as a different "
+             "--bess-csv fleet, that must not overwrite the reference run.",
+    )
+    parser.add_argument(
         "--no-capex",
         action="store_true",
         help="Dispatch the as-built system: close every CAPEX decision so no new "
@@ -1522,6 +1535,7 @@ def main() -> None:
                 no_capex=args.no_capex,
                 bess_csv=Path(args.bess_csv) if args.bess_csv else None,
                 line_csv=Path(args.line_csv) if args.line_csv else None,
+                out_suffix=args.out_suffix,
             )
     else:
         run_horizon(
@@ -1539,6 +1553,7 @@ def main() -> None:
             no_capex=args.no_capex,
             bess_csv=Path(args.bess_csv) if args.bess_csv else None,
             line_csv=Path(args.line_csv) if args.line_csv else None,
+            out_suffix=args.out_suffix,
         )
     print(f"\nResults under {C.ASTR_RESULTS_DIR}")
 
