@@ -137,8 +137,20 @@ def _load_network() -> dict:
         return json.load(fh)
 
 
-def _restrict_network(network: dict, nested_bas: set[str]) -> dict:
-    """Keep only substations, corridors, interfaces and assets inside nested_bas."""
+def _restrict_network(network: dict, nested_bas: set[str],
+                      peak_W: dict[str, float] | None = None) -> dict:
+    """Keep only substations, corridors, interfaces and assets inside nested_bas.
+
+    A component the restriction islands is reconnected through the corridors
+    the restriction cut, each re-terminated on the bus of the balancing area
+    its far end belongs to, at its own recorded capacity.
+
+    ``peak_W`` is each substation's peak load, used only for the fallback
+    gateway of a component with no severed corridor to restore. It is passed in
+    because the network file does not carry it: this function used to read
+    ``total_peak_W`` off the node records, the key is not there, every peak
+    read as zero, and every islanded load component was given the 5 MW floor.
+    """
     keep = {n["hub_id"] for n in (network.get("nodes") or [])
             if n.get("parent_ba") in nested_bas}
     out = dict(network)
@@ -160,8 +172,45 @@ def _restrict_network(network: dict, nested_bas: set[str]) -> dict:
     gg.add_nodes_from(keep)
     gg.add_edges_from((e["source"], e["target"]) for e in out["edges"])
     have_iface = {i["hub_id"] for i in out["ba_interfaces"]}
-    peak = {n["hub_id"]: float(n.get("total_peak_W") or 0.0) for n in out["nodes"]}
+    peak = {h: float(v or 0.0) for h, v in (peak_W or {}).items()}
     ba_of = {n["hub_id"]: n.get("parent_ba") for n in out["nodes"]}
+
+    # Corridors the restriction cuts: one end kept, the other in a balancing
+    # area that is not nested and so survives only as a copper-plate bus.
+    #
+    # Dropping them and handing the island a gateway to its OWN bus was wrong
+    # twice over. The gateway fell to the 5 MW floor (see the docstring), which
+    # is below the minimum load of the components it fed, so 16 substations were
+    # short in all 672 hours and islanded components carried 63.2 of S1's
+    # 153.3 GWh of shortfall, 57.2 of S0's 122.2, and all 4.06 of S4's. And even
+    # correctly sized it would have been a wire rated to the load it serves,
+    # attached to the wrong bus: the four Merced Irrigation District substations
+    # are fed over two 150 MW corridors from BANC, not from PG&E.
+    #
+    # The corridors are in the data, so they are kept as they are. Only the far
+    # end moves, from a substation that is out of scope to the bus of its
+    # balancing area, which is how every non-nested area is already represented.
+    # Parallel corridors from one substation to one bus are summed, since they
+    # become a single interface arc.
+    #
+    # This is done for islanded components only. The restriction also cuts 209
+    # corridors (52 GW) attached to the main network, and re-terminating those
+    # on a copper plate would open zero-impedance paths around congested
+    # corridors -- substation A to the BANC bus and back to substation B --
+    # which would understate P_cong. An island has no second connection, so no
+    # such loop can form through it.
+    ba_all = {n["hub_id"]: n.get("parent_ba") for n in (network.get("nodes") or [])}
+    severed: dict[str, dict[str, float]] = {}
+    for e in network.get("edges") or []:
+        s, t = e["source"], e["target"]
+        if (s in keep) == (t in keep):
+            continue
+        near, far = (s, t) if s in keep else (t, s)
+        far_ba = ba_all.get(far)
+        if not far_ba:
+            continue
+        by_ba = severed.setdefault(near, {})
+        by_ba[far_ba] = by_ba.get(far_ba, 0.0) + float(e["installed_capacity_W"])
     # A gateway sized to load alone strands any component that generates more
     # than it consumes -- the same fault as the synthetic-feed floor in 09_01,
     # reached by a different route.
@@ -178,25 +227,52 @@ def _restrict_network(network: dict, nested_bas: set[str]) -> dict:
     # one substation to another between scenarios, which is both a
     # reproducibility defect and enough to break any per-corridor join across
     # two runs. Tie-break on the handle so the choice is stable.
+    restored = 0
+    restored_w = 0.0
+    restored_to: dict[str, int] = {}
+    new_ifaces = []
     for comp in sorted(nx.connected_components(gg), key=lambda c: sorted(c)[0]):
         if comp & have_iface:
             continue
+        links = sorted((h, b, w) for h in comp for b, w in severed.get(h, {}).items())
+        if links:
+            for h, far_ba, w in links:
+                new_ifaces.append({
+                    "hub_id": h,
+                    "parent_ba": far_ba,
+                    "interface_capacity_W": w,
+                    "n_substations": len(comp),
+                    "role": "severed_corridor",
+                })
+                restored_w += w
+                restored_to[far_ba] = restored_to.get(far_ba, 0) + 1
+            restored += 1
+            continue
+        # No corridor to restore: the component was already detached in the full
+        # network. Fall back to a gateway on its own bus, sized to what it has
+        # to move.
         anchor = max(sorted(comp),
                      key=lambda h: (max(peak.get(h, 0.0), gen_W.get(h, 0.0)), h))
         cap = max(sum(peak.get(h, 0.0) for h in comp),
                   sum(gen_W.get(h, 0.0) for h in comp), 5e6)
-        out["ba_interfaces"] = list(out["ba_interfaces"]) + [{
+        new_ifaces.append({
             "hub_id": anchor,
             "parent_ba": ba_of.get(anchor),
             "interface_capacity_W": cap,
             "n_substations": len(comp),
             "role": "restriction_gateway",
-        }]
+        })
         added += 1
+    out["ba_interfaces"] = list(out["ba_interfaces"]) + new_ifaces
 
     print(f"  nesting only {sorted(nested_bas)}: {len(out['nodes'])} substations, "
-          f"{len(out['edges'])} corridors, {len(out['ba_interfaces'])} interfaces"
-          + (f" (+{added} gateways for components islanded by the restriction)" if added else ""))
+          f"{len(out['edges'])} corridors, {len(out['ba_interfaces'])} interfaces")
+    if restored:
+        to = ", ".join(f"{n} to {b}" for b, n in sorted(restored_to.items()))
+        print(f"    {restored} components islanded by the restriction reconnected through "
+              f"their own severed corridors ({restored_w / 1e6:,.0f} MW; {to})")
+    if added:
+        print(f"    {added} components with no corridor to restore given a fallback gateway")
     return out
 
 
@@ -319,7 +395,10 @@ def build_nested_graph(
     ratings = _load_transformer_ratings()
     nested_bas = set(only_ba) if only_ba else set(C.CALIFORNIA_REGIONS)
     if only_ba:
-        network = _restrict_network(network, nested_bas)
+        load_kW = total_kW if total_kW is not None else ev_kW
+        peak_W = {h: float(np.asarray(load_kW[i], dtype=float).max()) * 1000.0
+                  for i, h in enumerate(hub_ids)}
+        network = _restrict_network(network, nested_bas, peak_W=peak_W)
         generators = network.get("generators") or []
     g = _strip_mapped_ca_assets(base, generators, nested_bas)
     g = _drop_internal_ca_edges(g, nested_bas)
