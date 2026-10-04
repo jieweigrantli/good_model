@@ -1,0 +1,27 @@
+Traceback (most recent call last):
+  File "E:\GitHub\good_model\Distribution-Grid-EV-CA\10_01_run_scenarios_S0_S3.py", line 1368, in run_horizon
+    solution, built_graph, obj = _solve_nlg(nlg, policies, network_kw, solver_kw, f"{tag}-{scen}")
+                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\GitHub\good_model\Distribution-Grid-EV-CA\10_01_run_scenarios_S0_S3.py", line 847, in _solve_nlg
+    network.solve(**solver_kw)
+  File "E:\GitHub\good_model\good\optimization\network.py", line 490, in solve
+    status, condition = self.model.solve(solver_name=solver, **options)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Grant\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\linopy\model.py", line 2127, in solve
+    self.solver = solver = solvers.Solver.from_name(
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Grant\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\linopy\solvers.py", line 670, in from_name
+    return cls.from_model(
+           ^^^^^^^^^^^^^^^
+  File "C:\Users\Grant\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\linopy\solvers.py", line 694, in from_model
+    instance._build(**build_kwargs)
+  File "C:\Users\Grant\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\linopy\solvers.py", line 712, in _build
+    self._build_direct(**build_kwargs)
+  File "C:\Users\Grant\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\linopy\solvers.py", line 1994, in _build_direct
+    m = self._build_solver_model(
+        ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Grant\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\linopy\solvers.py", line 2042, in _build_solver_model
+    c = gm.addMConstr(M.A, x, M.sense, M.b)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "src/gurobipy/_model.pyx", line 4386, in gurobipy._model.Model.addMConstr
+gurobipy._exception.GurobiError: Out of memory
