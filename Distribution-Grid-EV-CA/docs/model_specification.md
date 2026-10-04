@@ -1187,13 +1187,35 @@ decimals whether the RPS is a hard limit or carries a non-compliance cost.
 **Emission accounting.** Three things changed, and the CO2 figures in this document
 above this point predate all three.
 
-*Coal.* WEC.json's per-asset `co2` is unusable for coal: 32 of 68 WECC coal units
-carry zero and the rest 68 to 271 kg/MWh, so coal was counted at 195 kg/MWh as
-dispatched. Every unit carries a realistic heat rate, so the factor is rebuilt per unit
-as heat rate × 95.99 kg CO2/MMBtu (EIA): 1,001 kg/MWh generation-weighted, 900 to 1,300
-across units, against EIA's national 1,048. Gas stays on its published factors (368
-kg/MWh as dispatched, 498 from heat rates, 435 EIA national). `10_11` applies five
-factor sets and reports the range.
+*Emission factors.* The per-asset `co2` in `WEC_modified.json` is wrong for every
+plant emitting 1,000 lb/MWh or more, and the cause is a parsing fault, not missing
+data. That file was built from eGRID 2023, which writes large numbers with a thousands
+separator (`"2,169.248"`) where the 2021 file did not, and the build lost every value
+written that way. On the fossil units in the WECC model the asset value equals the raw
+2023 rate on 490 of 490 units below 1,000 lb/MWh and on 0 of 720 at or above it: 62 of
+63 coal units, 546 gas units, 112 oil units, 45 GW. Coal came out at 87 kg/MWh
+capacity-weighted against 1,048 in the build made from the 2021 file, and gas at 375
+against 454. Capacities and heat rates are identical between the two builds — they
+come from NEEDS v6.21, not eGRID — so the fault touched the accounting and not the
+dispatch.
+
+Factors are now read from the raw 2023 file. In order: zero for a fuel that burns
+nothing; the plant's own CO2 output rate, by ORIS code; for coal, gas and oil at a
+plant with no usable rate, heat rate × EIA carbon content; otherwise the value on the
+asset. The rule is `common.emission_factor`, shared by `10_01` and `10_11`. As
+dispatched in S1 that gives coal 1,063 kg/MWh, gas 464 and oil 454, with 22,057 of
+22,751 GWh of fossil energy on a plant rate. An earlier fix rebuilt coal alone from
+heat rates before the cause was known; it landed close for coal (1,001) and left the
+gas and oil units with the same fault uncorrected.
+
+Two cautions. Fuels that burn nothing must be zeroed explicitly: a solar field sharing
+an ORIS code with a gas plant otherwise inherits its rate, the median for solar turns
+positive, and the median fallback spreads it to every solar unit with no rate — 0.49 Mt
+from solar in a four-week run, caught in testing. And a plant rate is a plant average:
+1,332 GWh of fossil energy, 6%, sits on units whose plant rate is outside 0.5 to 1.5
+times what their own heat rate implies (gas units at Clark carry 140 kg/MWh against
+490). `10_11` reports a second set, `egrid2023_checked`, with those replaced by the
+heat-rate value, alongside `unit_heat_rate`, `eia_fuel_average_2023` and `published`.
 
 *Hourly curves.* Each scenario saves hourly generation, fuel burned and CO2 by fuel
 and by balancing area, and the hourly energy balance, so factors can be changed
@@ -1225,19 +1247,31 @@ uses non-compliance. The penalty would have to be under about $7/MWh for Califor
 gas to enter, so it is the form of the standard and not its level that keeps it out.
 The hard-limit runs are kept as `*.rps_hard`.
 
-Against S1, coal from unit heat rates, positive = less CO2:
+Against S1, plant rates from eGRID 2023, RPS non-compliance at $50/MWh, positive =
+less CO2. The range is across the factor sets other than `published`.
 
-| | extra load | consequential | average | marginal |
-|---|---:|---:|---:|---:|
-| storage on curtailment | 0.03 GWh | +20.8 kt | +20.8 kt | +20.8 kt |
-| storage on shortfall (pocket) | 43.44 GWh | −30.8 kt | −19.2 kt | −2.9 kt |
-| default EV-peak fleet | 5.90 GWh | −4.8 kt | −3.3 kt | −1.0 kt |
-| corridors ×10 | 54.45 GWh | +202.6 kt | +217.2 kt | +237.6 kt |
-| corridors + transformers ×10 | 90.09 GWh | +181.5 kt | +205.7 kt | +239.4 kt |
+| | extra load | consequential | average | marginal | consequential range |
+|---|---:|---:|---:|---:|---:|
+| storage on curtailment | 0.03 GWh | +27.2 kt | +27.2 kt | +27.2 kt | +25.6 to +28.8 |
+| storage on shortfall (pocket) | 43.44 GWh | −40.0 kt | −26.8 kt | −6.8 kt | −40.0 to −34.8 |
+| default EV-peak fleet | 5.90 GWh | −6.8 kt | −5.1 kt | −2.3 kt | −6.8 to −3.9 |
+| corridors ×10 | 54.45 GWh | +258.5 kt | +275.0 kt | +300.1 kt | +241.6 to +258.5 |
+| corridors + transformers ×10 | 90.09 GWh | +234.0 kt | +261.3 kt | +302.9 kt | +217.9 to +234.5 |
 
-The same table under the hard RPS reads +57.8, −54.0, n/a, +257.1 and +239.2 kt
-consequential. The model serves added load at 643 kg/MWh (613 under the hard RPS),
-against CARB's gas-marginal 375.
+The model serves added load at 764 kg/MWh (692 under the hard RPS), against CARB's
+gas-marginal 375. Under the hard RPS the same table reads +62.3, −61.0, n/a, +301.3 and
++283.5 kt consequential.
+
+**The RPS ratios are for 2025 and are sales shares.** `policies.json` takes the 2025
+column of `rps_fraction.csv`, an input file of NREL's ReEDS model, whose documentation
+gives the targets "as a percentage of state electricity sales", sales-weighted for the
+entities that must comply. In ReEDS a state may also meet its target with certificates
+bought from other states and with alternative compliance payments. The model applies
+the same numbers to in-state generation, counts only in-state plants, and runs a
+generator list from NEEDS v6.21 with nothing allowed to be built. California's ratio
+is 34.1% for 2021 and 44.8% for 2025. How the standard should be written for as-built
+dispatch, and for which year, is an open decision; nothing has been changed beyond the
+non-compliance cost.
 
 **The network build was not reproducible, and that was found by trying to measure
 the feed fix.** Diffing the rebuilt network against the previous one showed the
