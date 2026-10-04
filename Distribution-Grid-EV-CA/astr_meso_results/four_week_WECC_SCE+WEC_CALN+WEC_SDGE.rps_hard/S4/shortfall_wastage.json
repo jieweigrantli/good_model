@@ -1,0 +1,16 @@
+{
+  "shortfall_MWh": 0.0,
+  "wastage_MWh": 74172.28707193457,
+  "shortfall_GWh": 0.0,
+  "wastage_GWh": 74.17228707193456,
+  "dumped_surplus_GWh": 74.17228707193456,
+  "vre_curtailment_GWh": 0.0,
+  "top_shortfall_nodes": [],
+  "top_wastage_nodes": [
+    [
+      "WECC_IID",
+      74172.28707193457
+    ]
+  ],
+  "n_wastage_nodes": 1
+}

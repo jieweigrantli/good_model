@@ -121,6 +121,37 @@ NETWORK_KW = {
     "discount_rate": 0.07,
 }
 
+# Cost of falling short of a state renewable portfolio standard, in $ per MWh of
+# renewable energy short, applied in as-built (--no-capex) dispatch.
+#
+# Examples/policies.json writes each standard as a share of the generation of
+# plants in the state, with no non-compliance allowed:
+#
+#     renewable >= ratio x (renewable + non-renewable)     over the horizon
+#
+# That form is built for capacity planning, where a binding standard makes the
+# model build renewables. With building switched off the renewable side is
+# fixed, so the only way left to hold the ratio is to hold down everything else,
+# and the standard becomes a hard cap on in-state non-renewable generation.
+# Measured on the three-IOU four-week runs it bound exactly in California,
+# Arizona, New Mexico, Nevada and Washington in every scenario: California's
+# non-renewable generation was 10,629 GWh with or without EVs, storage or
+# corridor relief. Its gas could not respond to anything, so every added MWh
+# came from states where the standard does not bind or does not exist --
+# Oregon, Montana, Utah, Idaho, Wyoming -- which is why coal sat on the margin.
+#
+# Allowing non-compliance at a cost turns the cap into a price. $50/MWh is the
+# CPUC's penalty for a shortfall against California's standard (D.18-05-026) and
+# the figure set in Washington's statute. One value is used for every state.
+#
+# It does not make the standard neutral. Each extra MWh of in-state
+# non-renewable generation raises the shortfall by `ratio` MWh, so California
+# gas carries an adder of 0.4476 x 50 = $22/MWh that out-of-state plants do not,
+# and the dispatch is still tilted towards imports -- by a price now, where it
+# was an absolute limit.
+RPS_NONCOMPLIANCE_COST = 50.0
+RPS_NONCOMPLIANCE_CAPACITY_MWH = 1e9
+
 _NODEFILE_DIR = os.path.abspath("./gurobi_nodefiles")
 
 # `linopy.Model.solve` takes `solver_options` as **kwargs, so Gurobi parameters

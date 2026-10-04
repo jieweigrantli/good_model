@@ -293,6 +293,11 @@ def _generation_totals(solution_graph, graph=None, time_step: float = 1.0) -> pd
                     "co2_kg_per_MWh_published": published,
                     "heat_rate_btu_per_kWh": float(heat_rate) if has_hr else np.nan,
                     "fuel_MMBtu": energy * float(heat_rate) / 1000.0 if has_hr else np.nan,
+                    # What a portfolio standard is written on.
+                    "jurisdiction": source.get("jurisdiction"),
+                    "renewable": bool(source.get("renewable", False)),
+                    "asset_class": source.get("_class"),
+                    "asset_type": source.get("type"),
                     "hourly_MW": arr,
                 }
             )
@@ -363,6 +368,42 @@ def _emissions_kg(gen_df: pd.DataFrame) -> float:
         print(f"  note: {missing_mwh / 1e3:,.1f} GWh from generators with no usable "
               f"co2 factor; used their fuel's median from the same table")
     return float((gen_df["energy_MWh"] * used).sum())
+
+
+def _rps_compliance(gen: pd.DataFrame, policies: dict) -> pd.DataFrame:
+    """Each portfolio standard against what was dispatched.
+
+    Mirrors the filters in Examples/policies.json: assets in the state, stores
+    and plain loads left out, split on the ``renewable`` flag. ``shortfall_MWh``
+    is the renewable energy the state is short of its ratio, which is the
+    non-compliance the solver paid for when a cost is set.
+    """
+    rows = []
+    if gen.empty or "jurisdiction" not in gen.columns:
+        return pd.DataFrame(rows)
+    g = gen[(gen["asset_class"] != "Store") & (gen["asset_type"] != "load")]
+    for handle, pol in sorted(policies.items()):
+        if pol.get("_class") != "Portfolio_Standard" or not handle.startswith("rps_"):
+            continue
+        state = handle[len("rps_"):]
+        s = g[g["jurisdiction"] == state]
+        if s.empty:
+            continue
+        ren = float(s.loc[s["renewable"], "energy_MWh"].sum())
+        oth = float(s.loc[~s["renewable"], "energy_MWh"].sum())
+        ratio = float(pol.get("ratio") or 0.0)
+        short = max(0.0, ratio * (ren + oth) - ren)
+        cost = float(pol.get("non_compliance_cost") or 0.0)
+        rows.append({
+            "state": state, "ratio_required": ratio,
+            "renewable_MWh": ren, "other_MWh": oth,
+            "share": ren / (ren + oth) if ren + oth > 0 else np.nan,
+            "shortfall_MWh": short,
+            "non_compliance_cost_per_MWh": cost,
+            "non_compliance_cost_total": short * cost,
+            "adder_on_in_state_other_per_MWh": ratio * cost if short > 1e-6 else 0.0,
+        })
+    return pd.DataFrame(rows)
 
 
 _PARENT_BA: dict[str, str] | None = None
@@ -1095,6 +1136,7 @@ def run_horizon(
     bess_csv: Path | None = None,
     line_csv: Path | None = None,
     out_suffix: str | None = None,
+    rps_noncompliance_cost: float | None = None,
 ) -> pd.DataFrame:
     import good
     from good import migrate
@@ -1132,6 +1174,19 @@ def run_horizon(
     # translation, so the published policy file stays in its original form and
     # the RPS ratios remain traceable to it. All 32 state standards convert.
     policies = migrate.convert_policies(policies)
+
+    # See astr_v2.RPS_NONCOMPLIANCE_COST. None leaves each standard as the hard
+    # limit it is in the published file.
+    if rps_noncompliance_cost is not None:
+        n_rps = 0
+        for pol in policies.values():
+            if pol.get("_class") == "Portfolio_Standard":
+                pol["non_compliance_cost"] = float(rps_noncompliance_cost)
+                pol["non_compliance_capacity"] = astr_v2.RPS_NONCOMPLIANCE_CAPACITY_MWH
+                n_rps += 1
+        print(f"  RPS: non-compliance allowed at ${rps_noncompliance_cost:,.0f}/MWh on {n_rps} state standards")
+    else:
+        print("  RPS: hard limit, no non-compliance allowed")
 
     network_kw = dict(astr_v2.NETWORK_KW)
     network_kw["steps"] = (0, n_hours)
@@ -1326,6 +1381,14 @@ def run_horizon(
                 scen_dir / "generation_by_asset.csv", index=False
             )
             _write_hourly_curves(scen_dir, gen, solution, time_step)
+            _rps_compliance(gen, policies).to_csv(scen_dir / "rps_compliance.csv", index=False)
+            (scen_dir / "settings.json").write_text(json.dumps({
+                "no_capex": bool(no_capex),
+                "rps_noncompliance_cost_per_MWh": rps_noncompliance_cost,
+                "bess_csv": str(bess_csv) if bess_csv is not None else None,
+                "line_csv": str(line_csv) if line_csv is not None else None,
+                "out_suffix": out_suffix,
+            }, indent=2), encoding="utf-8")
             lines = _line_records(solution, built_graph)
             lines.to_csv(scen_dir / "line_flows_summary.csv", index=False)
             bess = _bess_records(solution, built_graph, time_step)
@@ -1394,7 +1457,8 @@ def run_horizon(
                           "bess_summary.csv", "solution.json",
                           "generation_hourly_by_fuel.csv", "heat_input_hourly_by_fuel.csv",
                           "co2_hourly_by_fuel.csv", "generation_hourly_by_ba_fuel.csv.gz",
-                          "balance_hourly.csv", "balance.json"):
+                          "balance_hourly.csv", "balance.json",
+                          "rps_compliance.csv", "settings.json"):
                 src = scen_dir / fname
                 if src.is_file():
                     C.ensure_dir(stale_dir)
@@ -1550,6 +1614,14 @@ def main() -> None:
              "--bess-csv fleet, that must not overwrite the reference run.",
     )
     parser.add_argument(
+        "--rps-noncompliance-cost",
+        default="auto",
+        help="Cost in $/MWh of falling short of a state RPS. 'auto' (default) uses "
+             "astr_v2.RPS_NONCOMPLIANCE_COST with --no-capex, where a hard RPS can only "
+             "cap in-state generation, and the hard limit otherwise. 'hard' forces the "
+             "published hard limit. A number sets the cost.",
+    )
+    parser.add_argument(
         "--no-capex",
         action="store_true",
         help="Dispatch the as-built system: close every CAPEX decision so no new "
@@ -1559,6 +1631,14 @@ def main() -> None:
         "otherwise S2 would collapse into S1.",
     )
     args = parser.parse_args()
+
+    choice = str(args.rps_noncompliance_cost).lower()
+    if choice == "hard":
+        rps_cost = None
+    elif choice == "auto":
+        rps_cost = astr_v2.RPS_NONCOMPLIANCE_COST if args.no_capex else None
+    else:
+        rps_cost = float(args.rps_noncompliance_cost)
 
     if args.no_capex and (args.stage1_capex_out or args.fix_capex_from):
         raise SystemExit("--no-capex forbids any CAPEX decision, so the two-stage flags do not apply.")
@@ -1675,6 +1755,7 @@ def main() -> None:
                 bess_csv=Path(args.bess_csv) if args.bess_csv else None,
                 line_csv=Path(args.line_csv) if args.line_csv else None,
                 out_suffix=args.out_suffix,
+                rps_noncompliance_cost=rps_cost,
             )
     else:
         run_horizon(
@@ -1693,6 +1774,7 @@ def main() -> None:
             bess_csv=Path(args.bess_csv) if args.bess_csv else None,
             line_csv=Path(args.line_csv) if args.line_csv else None,
             out_suffix=args.out_suffix,
+            rps_noncompliance_cost=rps_cost,
         )
     print(f"\nResults under {C.ASTR_RESULTS_DIR}")
 
