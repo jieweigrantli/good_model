@@ -222,13 +222,45 @@ def _solver_kw(horizon: str, scenario: str, log_path: Path | None = None, crosso
     return {"solver": "gurobi", "tee": True, "options": {"io_api": "direct", **opts}}
 
 
+# kg CO2 per million Btu of fuel burned. EIA, "Carbon Dioxide Emissions
+# Coefficients", released 18 September 2024.
+CO2_KG_PER_MMBTU = {"coal": 95.99, "natural gas": 52.91, "oil": 74.14}
+
+# Fuels whose published per-asset factor is replaced by the unit's own heat rate
+# times the fuel's carbon content.
+#
+# Coal has to be. WEC.json's ``co2`` for coal is not usable: 32 of the 68 WECC
+# coal units carry zero and the rest carry 68 to 271 kg/MWh, about a fifth of
+# what the same units' heat rates imply, so coal was being counted at 195 kg/MWh
+# generation-weighted against roughly 1,000 for real coal. Every one of those
+# units does carry a realistic heat rate (median 10,597 Btu/kWh), so the factor
+# is rebuilt per unit: 1,001 kg/MWh generation-weighted, 900 to 1,300 across
+# units, against EIA's national 1,048 for 2023.
+#
+# This went unnoticed while coal barely moved between scenarios. It moves now:
+# corridor relief displaces 159 GWh of it and a storage fleet charging off-peak
+# adds 45 GWh, so the placeholder understated P_cong by more than half and
+# flipped the sign of the storage result.
+#
+# Gas is left on its published factors. They average 368 kg/MWh as dispatched
+# against 498 from heat rates and 435 for EIA's national figure, so neither
+# basis is clearly right and the gap is 15%, not a factor of five. 10_11 reports
+# both, along with other factor sets, as a range.
+HEAT_RATE_EF_FUELS = ("coal",)
+
+
 def _generation_totals(solution_graph, graph=None, time_step: float = 1.0) -> pd.DataFrame:
-    """Per-asset generation in MWh, with each asset's own emission factor.
+    """Per-asset generation in MWh, with each asset's emission factor and fuel burn.
 
     Production comes back from the solution in MW, so energy is the hourly sum
-    times the step length. ``fuel`` and ``co2`` are input attributes and are NOT
-    echoed into the v2 solution graph, so *graph* -- the built graph the solve
-    ran on -- has to be passed to recover them.
+    times the step length. ``fuel``, ``co2`` and ``heat_rate`` are input
+    attributes and are NOT echoed into the v2 solution graph, so *graph* -- the
+    built graph the solve ran on -- has to be passed to recover them.
+
+    ``co2_kg_per_MWh`` is the factor the accounting uses; the value published on
+    the asset is kept beside it as ``co2_kg_per_MWh_published``. ``fuel_MMBtu``
+    is the fuel burned, so any carbon coefficient can be applied after the solve
+    without going back to the input data.
     """
     rows = []
     for node_name, node_data in solution_graph._node.items():
@@ -240,22 +272,50 @@ def _generation_totals(solution_graph, graph=None, time_step: float = 1.0) -> pd
             if prod is None or fuel is None:
                 continue
             arr = np.asarray(prod, dtype=float).flatten()
+            fuel = str(fuel).lower()
+            energy = float(arr.sum() * time_step)
+            published = pd.to_numeric(source.get("co2", asset_data.get("co2")), errors="coerce")
+            # v2 heat rates are in Btu/kWh (good.migrate converts them from J/J).
+            heat_rate = pd.to_numeric(source.get("heat_rate", asset_data.get("heat_rate")), errors="coerce")
+            has_hr = bool(pd.notna(heat_rate) and heat_rate > 0)
+            factor = published
+            if fuel in HEAT_RATE_EF_FUELS and has_hr:
+                factor = float(heat_rate) / 1000.0 * CO2_KG_PER_MMBTU[fuel]
             rows.append(
                 {
                     "node": node_name,
                     "asset": asset_name,
-                    "fuel": str(fuel).lower(),
-                    "energy_MWh": float(arr.sum() * time_step),
+                    "fuel": fuel,
+                    "energy_MWh": energy,
                     "mean_MW": float(arr.mean()) if arr.size else 0.0,
-                    # Per-generator emission factor carried on the asset itself,
-                    # in kg CO2 per MWh of electricity. See _emissions_kg.
-                    "co2_kg_per_MWh": pd.to_numeric(
-                        source.get("co2", asset_data.get("co2")), errors="coerce"
-                    ),
+                    # kg CO2 per MWh of electricity, as used. See _emissions_kg.
+                    "co2_kg_per_MWh": factor,
+                    "co2_kg_per_MWh_published": published,
+                    "heat_rate_btu_per_kWh": float(heat_rate) if has_hr else np.nan,
+                    "fuel_MMBtu": energy * float(heat_rate) / 1000.0 if has_hr else np.nan,
                     "hourly_MW": arr,
                 }
             )
     return pd.DataFrame(rows)
+
+
+def _emission_factors(gen_df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Per-row kg CO2/MWh as the accounting applies it, and which rows fell back.
+
+    A row with no usable factor takes the median of its own fuel from the same
+    table, so the fallback is internally consistent. ``ASTR_COAL_CO2`` (kg/MWh)
+    overrides every coal row.
+    """
+    ef = pd.to_numeric(gen_df.get("co2_kg_per_MWh"), errors="coerce")
+    have = ef.fillna(0.0) > 0
+    fuel_median = gen_df[have].groupby("fuel")["co2_kg_per_MWh"].median() if have.any() else pd.Series(dtype=float)
+    fallback = gen_df["fuel"].map(fuel_median)
+    used = ef.where(have, fallback).fillna(0.0)
+    fell_back = (~have) & (fallback.fillna(0.0) > 0)
+    coal_override = os.environ.get("ASTR_COAL_CO2")
+    if coal_override:
+        used = used.where(gen_df["fuel"] != "coal", float(coal_override))
+    return used, fell_back
 
 
 def _emissions_kg(gen_df: pd.DataFrame) -> float:
@@ -280,47 +340,122 @@ def _emissions_kg(gen_df: pd.DataFrame) -> float:
     the consequential EV emission factor falls from 771 g/kWh to roughly the
     mid-300s, and every absolute tonnage roughly halves.
 
-    Two known weaknesses in the asset data, both handled here rather than
-    silently:
+    That correction was right for gas and wrong for coal. Moving to the asset
+    values replaced a coal constant that was somewhat high with published values
+    that are a fifth of the truth, and it went unnoticed because coal barely
+    moved between the scenarios then being compared. Coal now takes its factor
+    from each unit's heat rate; see ``HEAT_RATE_EF_FUELS``. Two things remain
+    handled here rather than silently:
 
-    * **Coal is a single shared default.** Every large coal unit carries the
-      identical 249.5 kg/MWh, where real coal is 900-1,000 kg/MWh. It is a
-      fuel-level placeholder, not per-unit data. `ASTR_COAL_CO2` overrides it --
-      **in kg/MWh now, not kg/J**; unset, the published value is used unchanged
-      so results stay traceable to the input.
-    * **43 fossil producers carry no factor at all.** Those fall back to the
-      capacity-weighted median of their own fuel from the same file, not to the
-      old constants, so the fallback is internally consistent.
+    * ``ASTR_COAL_CO2`` overrides every coal unit with one value in kg/MWh.
+    * **Fossil producers with no usable factor** fall back to the median of
+      their own fuel from the same table, not to the old constants, so the
+      fallback is internally consistent.
 
     CH4 and N2O are also on the assets and are not counted here; this is CO2,
     not CO2-equivalent.
     """
     if gen_df.empty:
         return 0.0
-
-    # Fallback per fuel, taken from the file itself rather than from a constant.
-    have = gen_df[pd.to_numeric(gen_df.get("co2_kg_per_MWh"), errors="coerce").fillna(0.0) > 0]
-    fuel_median = (
-        have.groupby("fuel")["co2_kg_per_MWh"].median().to_dict() if not have.empty else {}
-    )
-    coal_override = os.environ.get("ASTR_COAL_CO2")
-
-    co2 = 0.0
-    missing_mwh = 0.0
-    for _, r in gen_df.iterrows():
-        f = str(r.get("fuel", "")).lower()
-        ef = pd.to_numeric(r.get("co2_kg_per_MWh"), errors="coerce")
-        if not (isinstance(ef, float) and ef > 0):
-            ef = fuel_median.get(f, 0.0)
-            if ef > 0:
-                missing_mwh += float(r["energy_MWh"])
-        if f == "coal" and coal_override:
-            ef = float(coal_override)
-        co2 += float(r["energy_MWh"]) * float(ef or 0.0)
+    used, fell_back = _emission_factors(gen_df)
+    missing_mwh = float(gen_df.loc[fell_back, "energy_MWh"].sum())
     if missing_mwh > 0:
-        print(f"  note: {missing_mwh / 1e3:,.1f} GWh from generators with no published "
-              f"co2 factor; used their fuel's median from the same file")
-    return float(co2)
+        print(f"  note: {missing_mwh / 1e3:,.1f} GWh from generators with no usable "
+              f"co2 factor; used their fuel's median from the same table")
+    return float((gen_df["energy_MWh"] * used).sum())
+
+
+_PARENT_BA: dict[str, str] | None = None
+
+
+def _parent_ba(node: str) -> str:
+    """Balancing area a node belongs to: its own id, or a substation's parent."""
+    global _PARENT_BA
+    if _PARENT_BA is None:
+        _PARENT_BA = {}
+        if C.CA_NETWORK_JSON.is_file():
+            with open(C.CA_NETWORK_JSON, encoding="utf-8") as fh:
+                _PARENT_BA = {n["hub_id"]: n.get("parent_ba") for n in json.load(fh).get("nodes") or []}
+    return _PARENT_BA.get(node) or node
+
+
+def _write_hourly_curves(scen_dir: Path, gen: pd.DataFrame, solution_graph, time_step: float = 1.0) -> dict:
+    """Save what is needed to re-do the emission accounting without re-solving.
+
+    The per-asset table gives totals. These give the shape: generation, fuel
+    burned and CO2 by fuel for every hour, system-wide and by balancing area,
+    plus the hourly energy balance. With them a different set of emission
+    factors -- by fuel, by region, or by hour -- can be applied after the fact,
+    and the difference between two scenarios is the consequential generation
+    curve for whatever separates them.
+
+      generation_hourly_by_fuel.csv     MW, hour x fuel
+      heat_input_hourly_by_fuel.csv     MMBtu per hour, hour x fuel (units with a heat rate)
+      co2_hourly_by_fuel.csv            kg per hour, hour x fuel, as this run accounts it
+      generation_hourly_by_ba_fuel.csv.gz   long: hour, ba, fuel, generation_MW, heat_input_MMBtu_per_h
+      balance_hourly.csv                MW: generation, wastage, line losses, served, shortfall
+      balance.json                      the same as totals in MWh
+
+    ``served`` is generation net of storage, less wastage and line losses: the
+    energy that reached load. Scenarios that leave different amounts unserved
+    are compared on it.
+    """
+    if gen.empty:
+        return {}
+    M = np.vstack(gen["hourly_MW"].to_numpy())
+    H = M.shape[1]
+    fuel = gen["fuel"].to_numpy()
+    hr = pd.to_numeric(gen["heat_rate_btu_per_kWh"], errors="coerce").fillna(0.0).to_numpy() / 1000.0
+    ef, _ = _emission_factors(gen)
+    hours = pd.RangeIndex(H, name="hour")
+
+    def by(keys, values) -> pd.DataFrame:
+        return pd.DataFrame(values).groupby(keys).sum().T.set_index(hours)
+
+    by(fuel, M).to_csv(scen_dir / "generation_hourly_by_fuel.csv", float_format="%.4f")
+    heat = by(fuel, M * hr[:, None])
+    heat.loc[:, (heat != 0).any()].to_csv(scen_dir / "heat_input_hourly_by_fuel.csv", float_format="%.3f")
+    co2 = by(fuel, M * ef.to_numpy()[:, None])
+    co2.loc[:, (co2 != 0).any()].to_csv(scen_dir / "co2_hourly_by_fuel.csv", float_format="%.2f")
+
+    ba = np.array([_parent_ba(n) for n in gen["node"]])
+    key = pd.MultiIndex.from_arrays([ba, fuel], names=["ba", "fuel"])
+    g_long = pd.DataFrame(M, index=key).groupby(level=[0, 1]).sum().stack().rename("generation_MW")
+    h_long = pd.DataFrame(M * hr[:, None], index=key).groupby(level=[0, 1]).sum().stack().rename("heat_input_MMBtu_per_h")
+    long = pd.concat([g_long, h_long], axis=1).reset_index().rename(columns={"level_2": "hour"})
+    long = long[(long["generation_MW"] != 0) | (long["heat_input_MMBtu_per_h"] != 0)]
+    long[["hour", "ba", "fuel", "generation_MW", "heat_input_MMBtu_per_h"]].to_csv(
+        scen_dir / "generation_hourly_by_ba_fuel.csv.gz", index=False, float_format="%.4f", compression="gzip")
+
+    shortfall = np.zeros(H)
+    wastage = np.zeros(H)
+    for node in solution_graph._node.values():
+        for name, acc in (("shortfall", shortfall), ("wastage", wastage)):
+            v = np.asarray(node.get(name) or [], dtype=float).flatten()
+            if v.size == H:
+                acc += v
+    losses = np.zeros(H)
+    for adj in solution_graph._adj.values():
+        for edge in adj.values():
+            for line in (edge.get("lines") or {}).values():
+                f = np.asarray(line.get("flow", line.get("transmission", [])), dtype=float).flatten()
+                r = np.asarray(line.get("received", f), dtype=float).flatten()
+                if f.size == H and r.size == H:
+                    losses += f - r
+    generation = M.sum(axis=0)
+    served = generation - wastage - losses
+    pd.DataFrame({"generation_MW": generation, "wastage_MW": wastage, "line_losses_MW": losses,
+                  "served_MW": served, "shortfall_MW": shortfall}, index=hours).to_csv(
+        scen_dir / "balance_hourly.csv", float_format="%.4f")
+    totals = {
+        "generation_MWh": float(generation.sum() * time_step),
+        "wastage_MWh": float(wastage.sum() * time_step),
+        "line_losses_MWh": float(losses.sum() * time_step),
+        "served_MWh": float(served.sum() * time_step),
+        "shortfall_MWh": float(shortfall.sum() * time_step),
+    }
+    (scen_dir / "balance.json").write_text(json.dumps(totals, indent=2), encoding="utf-8")
+    return totals
 
 
 def _line_records(solution_graph, graph=None) -> pd.DataFrame:
@@ -1190,6 +1325,7 @@ def run_horizon(
             gen.drop(columns=["hourly_MW"], errors="ignore").to_csv(
                 scen_dir / "generation_by_asset.csv", index=False
             )
+            _write_hourly_curves(scen_dir, gen, solution, time_step)
             lines = _line_records(solution, built_graph)
             lines.to_csv(scen_dir / "line_flows_summary.csv", index=False)
             bess = _bess_records(solution, built_graph, time_step)
@@ -1255,7 +1391,10 @@ def run_horizon(
             moved = []
             for fname in ("objective.txt", "shortfall_wastage.json",
                           "generation_by_asset.csv", "line_flows_summary.csv",
-                          "bess_summary.csv", "solution.json"):
+                          "bess_summary.csv", "solution.json",
+                          "generation_hourly_by_fuel.csv", "heat_input_hourly_by_fuel.csv",
+                          "co2_hourly_by_fuel.csv", "generation_hourly_by_ba_fuel.csv.gz",
+                          "balance_hourly.csv", "balance.json"):
                 src = scen_dir / fname
                 if src.is_file():
                     C.ensure_dir(stale_dir)

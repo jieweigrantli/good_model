@@ -1,0 +1,221 @@
+"""
+10_11_emission_accounting.py
+
+Emission accounting after the solve: several sets of emission factors, four ways
+of comparing scenarios that serve different amounts of load, and the hourly
+consequential generation behind each comparison.
+
+CO2 is not in the objective. It is computed from what was dispatched, so the
+factors can be changed and the comparison redone without re-solving. 10_01 saves
+what that needs: per-asset energy, heat rate and fuel burned, the load actually
+served, and hourly generation by fuel.
+
+Emission-factor sets
+--------------------
+The published per-asset ``co2`` in WEC.json is unusable for coal (a fifth of what
+the units' own heat rates imply) and arguable for gas, so no single set is
+reported alone:
+
+  unit_heat_rate_coal    coal = unit heat rate x 95.99 kg/MMBtu; other fuels as
+                         published. The accounting 10_01 writes. PRIMARY.
+  coal_subbituminous     as primary, coal at 97.13 kg/MMBtu (western coal)
+  all_fossil_heat_rate   coal, gas and oil all from unit heat rates
+  eia_fuel_average_2023  flat per fuel: coal 1,048, gas 435, oil 1,116 kg/MWh
+  published              the input's own values. Wrong for coal; kept so earlier
+                         results stay traceable.
+
+Coefficients are EIA's "Carbon Dioxide Emissions Coefficients" (released
+2024-09-18); the fuel averages are EIA's 2023 pounds of CO2 per kWh.
+
+Four comparisons
+----------------
+An intervention X (storage, corridor relief) is compared with S1. X usually
+serves load that S1 sheds, and serving load emits, so the raw difference counts
+newly served load against X. All four are kept because they answer different
+questions. Positive means X emits less.
+
+  consequential   E(S1) - E(X). What the atmosphere sees, with no adjustment
+                  for X serving more load.
+  average         [E(S1)/D(S1) - E(X)/D(X)] x D(X). Compares CO2 per MWh
+                  served, i.e. credits the extra load at the system average.
+  marginal        E(S1) + r x [D(X) - D(S1)] - E(X). Credits the extra load at
+                  r, the rate at which the model itself serves added load:
+                  r = [E(S1) - E(S0)] / [D(S1) - D(S0)], the EV increment.
+  facts           no netting: the extra load served, in GWh, and the emission
+                  rate on it, [E(X) - E(S1)] / [D(X) - D(S1)], in kg/MWh.
+
+D is load served: generation net of storage, less wastage and line losses.
+
+Writes, under the results directory for the tag:
+  emission_accounting.csv               one row per factor set and scenario
+  emission_accounting_range.csv         min / primary / max across factor sets
+  consequential_generation_hourly.csv.gz   hourly generation by fuel, X minus S1
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+PKG = Path(__file__).resolve().parent
+sys.path.insert(0, str(PKG))
+
+import common as C
+
+KG_PER_MMBTU = {"coal": 95.99, "natural gas": 52.91, "oil": 74.14}
+KG_PER_MMBTU_SUBBITUMINOUS = 97.13
+LB_PER_KWH_2023 = {"coal": 2.31, "natural gas": 0.96, "oil": 2.46}
+KG_PER_LB = 0.45359237
+PRIMARY = "unit_heat_rate_coal"
+
+
+def _with_fallback(g: pd.DataFrame, ef: pd.Series) -> pd.Series:
+    """Rows with no usable factor take the median of their own fuel."""
+    ef = pd.to_numeric(ef, errors="coerce")
+    have = ef.fillna(0.0) > 0
+    med = ef[have].groupby(g.loc[have, "fuel"]).median()
+    return ef.where(have, g["fuel"].map(med)).fillna(0.0)
+
+
+def _from_heat_rate(g: pd.DataFrame, base: pd.Series, coef: dict[str, float]) -> pd.Series:
+    out = base.copy()
+    hr = pd.to_numeric(g["heat_rate_btu_per_kWh"], errors="coerce")
+    for fuel, c in coef.items():
+        m = (g["fuel"] == fuel) & (hr > 0)
+        out[m] = hr[m] / 1000.0 * c
+    return out
+
+
+def factor_sets(g: pd.DataFrame) -> dict[str, pd.Series]:
+    primary = _with_fallback(g, g["co2_kg_per_MWh"])
+    published = _with_fallback(g, g["co2_kg_per_MWh_published"])
+    flat = primary.copy()
+    for fuel, lb in LB_PER_KWH_2023.items():
+        flat[g["fuel"] == fuel] = lb * KG_PER_LB * 1000.0
+    return {
+        PRIMARY: primary,
+        "coal_subbituminous": _from_heat_rate(g, primary, {"coal": KG_PER_MMBTU_SUBBITUMINOUS}),
+        "all_fossil_heat_rate": _from_heat_rate(g, primary, KG_PER_MMBTU),
+        "eia_fuel_average_2023": flat,
+        "published": published,
+    }
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--tag", default="four_week_WECC_SCE+WEC_CALN+WEC_SDGE")
+    ap.add_argument("--reference", default="S1", help="Scenario every intervention is compared with.")
+    ap.add_argument("--baseline", default="S0", help="Scenario without the added load; sets the marginal rate.")
+    args = ap.parse_args()
+
+    root = C.ASTR_RESULTS_DIR / args.tag
+    scen = sorted(d.name for d in root.iterdir()
+                  if d.is_dir() and not d.name.endswith(".stale")
+                  and (d / "generation_by_asset.csv").is_file() and (d / "balance.json").is_file())
+    if args.reference not in scen or args.baseline not in scen:
+        raise SystemExit(f"Need {args.reference} and {args.baseline} solved by the current 10_01 "
+                         f"(with balance.json) under {root}; found {scen}.")
+
+    rows, fuel_rows = [], []
+    for s in scen:
+        g = pd.read_csv(root / s / "generation_by_asset.csv")
+        if "co2_kg_per_MWh_published" not in g.columns:
+            raise SystemExit(f"{s}/generation_by_asset.csv predates the heat-rate accounting; re-run {s}.")
+        bal = json.load(open(root / s / "balance.json", encoding="utf-8"))
+        for name, ef in factor_sets(g).items():
+            kg = g["energy_MWh"] * ef
+            rows.append({"ef_set": name, "scenario": s, "co2_t": float(kg.sum()) / 1e3,
+                         "served_GWh": bal["served_MWh"] / 1e3, "shortfall_GWh": bal["shortfall_MWh"] / 1e3})
+            by = kg.groupby(g["fuel"]).sum() / 1e3
+            en = g["energy_MWh"].groupby(g["fuel"]).sum() / 1e3
+            for fuel in by.index:
+                if by[fuel] != 0:
+                    fuel_rows.append({"ef_set": name, "scenario": s, "fuel": fuel, "energy_GWh": float(en[fuel]),
+                                      "co2_t": float(by[fuel]), "kg_per_MWh": float(by[fuel] / en[fuel]) if en[fuel] else np.nan})
+    A = pd.DataFrame(rows)
+
+    out = []
+    for name, a in A.groupby("ef_set", sort=False):
+        a = a.set_index("scenario")
+        e, d = a["co2_t"], a["served_GWh"] * 1e3            # tonnes, MWh
+        r = (e[args.reference] - e[args.baseline]) / (d[args.reference] - d[args.baseline])   # t per MWh
+        for s in a.index:
+            rec = {"ef_set": name, "scenario": s, "co2_Mt": e[s] / 1e6, "served_GWh": d[s] / 1e3,
+                   "shortfall_GWh": a.loc[s, "shortfall_GWh"], "marginal_rate_reference_kg_per_MWh": r * 1e3}
+            if s not in (args.reference, args.baseline):
+                dd = d[s] - d[args.reference]
+                rec.update({
+                    "extra_load_GWh": dd / 1e3,
+                    "consequential_t": e[args.reference] - e[s],
+                    "average_t": (e[args.reference] / d[args.reference] - e[s] / d[s]) * d[s],
+                    "marginal_t": e[args.reference] + r * dd - e[s],
+                    "rate_on_extra_load_kg_per_MWh": (e[s] - e[args.reference]) / dd * 1e3 if abs(dd) > 1.0 else np.nan,
+                })
+            out.append(rec)
+    R = pd.DataFrame(out)
+    R.to_csv(root / "emission_accounting.csv", index=False)
+    pd.DataFrame(fuel_rows).to_csv(root / "emission_accounting_by_fuel.csv", index=False)
+
+    metrics = ["consequential_t", "average_t", "marginal_t", "rate_on_extra_load_kg_per_MWh"]
+    X = R[R["extra_load_GWh"].notna()]
+    rng = []
+    for s, x in X.groupby("scenario", sort=False):
+        p = x[x["ef_set"] == PRIMARY].iloc[0]
+        alt = x[x["ef_set"] != "published"]
+        rec = {"scenario": s, "extra_load_GWh": p["extra_load_GWh"]}
+        for m in metrics:
+            rec[f"{m}_primary"] = p[m]
+            rec[f"{m}_min"] = alt[m].min()
+            rec[f"{m}_max"] = alt[m].max()
+        rng.append(rec)
+    RNG = pd.DataFrame(rng)
+    RNG.to_csv(root / "emission_accounting_range.csv", index=False)
+
+    # Hourly consequential generation: what each intervention changes, by fuel.
+    ref = pd.read_csv(root / args.reference / "generation_hourly_by_fuel.csv", index_col=0)
+    frames = []
+    for s in scen:
+        if s == args.reference:
+            continue
+        cur = pd.read_csv(root / s / "generation_hourly_by_fuel.csv", index_col=0)
+        # the baseline is reported the other way round: reference minus baseline
+        # is the generation that serves the added load
+        delta = (ref.sub(cur, fill_value=0.0) if s == args.baseline else cur.sub(ref, fill_value=0.0))
+        long = delta.stack().rename("delta_MW").reset_index()
+        long.columns = ["hour", "fuel", "delta_MW"]
+        long.insert(0, "comparison", f"{args.reference} minus {s}" if s == args.baseline else f"{s} minus {args.reference}")
+        frames.append(long[long["delta_MW"].abs() > 1e-6])
+    pd.concat(frames, ignore_index=True).to_csv(
+        root / "consequential_generation_hourly.csv.gz", index=False, float_format="%.4f", compression="gzip")
+
+    pd.set_option("display.width", 220)
+    pd.set_option("display.max_columns", 30)
+    prim = R[R["ef_set"] == PRIMARY]
+    print(f"emission accounting for {args.tag}, reference {args.reference}, baseline {args.baseline}\n")
+    print("CO2 by factor set (Mt):")
+    print(A.pivot(index="scenario", columns="ef_set", values="co2_t").div(1e6).round(4)
+          [[PRIMARY, "coal_subbituminous", "all_fossil_heat_rate", "eia_fuel_average_2023", "published"]].to_string())
+    print(f"\nrate at which the model serves added load ({args.baseline} -> {args.reference}), kg/MWh:")
+    print(R.drop_duplicates("ef_set").set_index("ef_set")["marginal_rate_reference_kg_per_MWh"].round(0).to_string())
+    print(f"\nprimary factor set ({PRIMARY}); positive = the intervention emits less than {args.reference}:")
+    show = prim[prim["extra_load_GWh"].notna()].set_index("scenario")
+    print(show[["shortfall_GWh", "extra_load_GWh", "consequential_t", "average_t", "marginal_t",
+                "rate_on_extra_load_kg_per_MWh"]].round({"shortfall_GWh": 2, "extra_load_GWh": 2, "consequential_t": 0,
+                                                        "average_t": 0, "marginal_t": 0,
+                                                        "rate_on_extra_load_kg_per_MWh": 0}).to_string())
+    print("\nrange across factor sets (published excluded), tonnes:")
+    for _, r_ in RNG.iterrows():
+        print(f"  {r_['scenario']:18} consequential {r_['consequential_t_min']:>10,.0f} to {r_['consequential_t_max']:>10,.0f}"
+              f"   average {r_['average_t_min']:>10,.0f} to {r_['average_t_max']:>10,.0f}"
+              f"   marginal {r_['marginal_t_min']:>10,.0f} to {r_['marginal_t_max']:>10,.0f}")
+    print(f"\nwrote emission_accounting.csv, emission_accounting_by_fuel.csv, emission_accounting_range.csv, "
+          f"consequential_generation_hourly.csv.gz under {root}")
+
+
+if __name__ == "__main__":
+    main()
