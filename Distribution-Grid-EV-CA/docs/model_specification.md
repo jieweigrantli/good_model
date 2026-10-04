@@ -1110,8 +1110,10 @@ corridors alone, 35.64 GWh transformer-bound. P_cong is 113,879 t (was 99,447) a
 P_cong' 96,568 t. P_cong rose because S1 now serves 63 GWh it used to shed, and
 serving load emits.
 
-The same mechanism governs M_BESS, which is −3,668 t. S2 serves 5.90 GWh more than S1,
-at 621 kg of CO2 per additional MWh, so the sign reflects delivered energy and not
+The same mechanism governs M_BESS, which is −3,668 t. S2 — which in this run was the
+default EV-peak fleet, not the curtailment fleet it was reported as; see the
+withdrawal below — serves 5.90 GWh more than S1, at 621 kg of CO2 per additional MWh
+on the coal factors then in use, so the sign reflects delivered energy and not
 storage. As a raw S1 − S2 difference the metric penalises any fleet that relieves
 shortfall; it needs an equal-delivered-energy basis before it is reported.
 
@@ -1143,9 +1145,99 @@ either. An ideal battery could shift up to 45.99 GWh within the same day (51% of
 shortfall) on 64 substations with about 1,237 MW / 6,618 MWh, 40.75 GWh of it at the
 upstream-bound nodes, which are short for a median of 40 hours. The bound uses each
 node's local headroom and overstates where the limit is upstream. No substation has
-both spill and shortfall, which is why the curtailment-sited fleet recovers 2.0 of
-229.4 GWh: the spill sits in pockets whose own load is already met and whose exit is
-the binding limit.
+both spill and shortfall, so storage does one job or the other depending on where it
+sits.
+
+**Withdrawn: "the curtailment-sited fleet recovers 2.0 of 229.4 GWh".** That figure,
+the M_BESS of −3,242 t and −3,668 t reported with it, and the explanation given for it
+(spill stranded in pockets with no outlet) all came from runs that did not use the
+curtailment-sited fleet. `--bess-csv` was left off, so `S2` fell back to the default
+rule, batteries on 1,564 EV-positive substations at half their mean EV peak. Run
+correctly, the 19-site curtailment fleet recovers **107 GWh** of spill and cycles 66
+times in 28 days. Each fleet now has its own scenario name, set with `--out-suffix`:
+`S2` is the default EV-peak fleet, `S2_curtail` the curtailment fleet,
+`S2_shift_node` and `S2_shift_pocket` the fleets sized against shortfall by `08_18`.
+
+**Storage against shortfall: the upper bound.** `08_18` sizes each short substation's
+need as its peak hourly shortfall and its largest single-day shortfall energy (1,331
+MW, 11,328 MWh, median duration 2.9 h), and builds two fleets of identical size that
+differ only in location: `node`, every short substation at twice its need, and
+`pocket`, the same substations at their need plus as much again on 120 non-short
+substations in their pockets. A pocket is the set of nodes with a directed path of
+slack arcs into a short node in a short hour, the load side of whatever limit binds.
+
+| | shortfall GWh | relieved | short substations |
+|---|---:|---:|---:|
+| S1 | 90.10 | — | 128 |
+| S2, default EV-peak fleet | 84.19 | 5.90 | 48 |
+| S2_curtail | 90.06 | 0.03 | — |
+| S2_shift_node | 46.73 | 43.37 | 20 |
+| S2_shift_pocket | 46.65 | 43.44 | 19 |
+| S3, corridors ×10 | 35.64 | 54.45 | 70 |
+| S4, corridors + transformers ×10 | 0.00 | 90.10 | 0 |
+
+Storage on the shortfall relieves 48% of it, 80% of what corridor relief does. Moving
+half the storage to pocket neighbours changes relief by 0.07 GWh: the neighbours are
+used (46 GWh discharged under the hard RPS) and are interchangeable with storage at
+the node, because relief is capped by the spare capacity on the lines entering the
+pocket. Six substations carry 37.3 of the remaining 46.7 GWh; three are rating
+conflicts with no headroom hour to charge in. These figures are identical to two
+decimals whether the RPS is a hard limit or carries a non-compliance cost.
+
+**Emission accounting.** Three things changed, and the CO2 figures in this document
+above this point predate all three.
+
+*Coal.* WEC.json's per-asset `co2` is unusable for coal: 32 of 68 WECC coal units
+carry zero and the rest 68 to 271 kg/MWh, so coal was counted at 195 kg/MWh as
+dispatched. Every unit carries a realistic heat rate, so the factor is rebuilt per unit
+as heat rate × 95.99 kg CO2/MMBtu (EIA): 1,001 kg/MWh generation-weighted, 900 to 1,300
+across units, against EIA's national 1,048. Gas stays on its published factors (368
+kg/MWh as dispatched, 498 from heat rates, 435 EIA national). `10_11` applies five
+factor sets and reports the range.
+
+*Hourly curves.* Each scenario saves hourly generation, fuel burned and CO2 by fuel
+and by balancing area, and the hourly energy balance, so factors can be changed
+without re-solving.
+
+*Four comparisons.* An intervention that serves load S1 sheds is charged for that
+load by a raw difference, so each is compared with S1 four ways: **consequential**,
+E(S1) − E(X); **average**, CO2 per MWh served times load served; **marginal**, which
+credits the extra load at the rate the model itself serves added load, from the EV
+increment S0 → S1; and **facts**, the extra load in GWh and the emission rate on it.
+
+**The RPS is the reason coal is on the margin.** `Examples/policies.json` writes each
+of 32 state standards as a share of in-state generation with no non-compliance
+allowed. That form is for capacity planning, where a binding standard makes the model
+build. In as-built dispatch renewables are fixed, so the standard becomes a hard cap
+on in-state non-renewable generation. It bound exactly in California, Arizona, New
+Mexico, Nevada and Washington in every scenario: California's non-renewable generation
+was 10,629 GWh with or without EVs, storage or corridor relief, so its gas could not
+respond to anything and every added MWh came from states where the standard does not
+bind or does not exist.
+
+Non-compliance is now allowed at $50/MWh, the CPUC penalty (D.18-05-026). **It did
+not free California's gas.** California still sits exactly on its required share with
+zero non-compliance: each MWh of in-state non-renewable generation raises the
+shortfall by 0.4476 MWh, an adder of $22.4 that takes California gas from a median
+$25.6/MWh to $48, against $22.7 for what actually served the EV load. 77% of
+California's gas capacity is idle and the model never pays to run it. Only Arizona
+uses non-compliance. The penalty would have to be under about $7/MWh for California
+gas to enter, so it is the form of the standard and not its level that keeps it out.
+The hard-limit runs are kept as `*.rps_hard`.
+
+Against S1, coal from unit heat rates, positive = less CO2:
+
+| | extra load | consequential | average | marginal |
+|---|---:|---:|---:|---:|
+| storage on curtailment | 0.03 GWh | +20.8 kt | +20.8 kt | +20.8 kt |
+| storage on shortfall (pocket) | 43.44 GWh | −30.8 kt | −19.2 kt | −2.9 kt |
+| default EV-peak fleet | 5.90 GWh | −4.8 kt | −3.3 kt | −1.0 kt |
+| corridors ×10 | 54.45 GWh | +202.6 kt | +217.2 kt | +237.6 kt |
+| corridors + transformers ×10 | 90.09 GWh | +181.5 kt | +205.7 kt | +239.4 kt |
+
+The same table under the hard RPS reads +57.8, −54.0, n/a, +257.1 and +239.2 kt
+consequential. The model serves added load at 643 kg/MWh (613 under the hard RPS),
+against CARB's gas-marginal 375.
 
 **The network build was not reproducible, and that was found by trying to measure
 the feed fix.** Diffing the rebuilt network against the previous one showed the
