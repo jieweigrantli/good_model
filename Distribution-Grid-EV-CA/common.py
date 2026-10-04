@@ -681,3 +681,114 @@ def injection_capacity_by_hub(records) -> dict[str, float]:
             continue  # genuine demand; handled in 08_03
         out[hid] = out.get(hid, 0.0) + float(rec.get("installed_capacity") or 0.0)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Plant emission rates, read from eGRID itself
+# ---------------------------------------------------------------------------
+# WEC_modified.json was built from eGRID 2023, and its per-asset ``co2`` is wrong
+# for every plant that emits 1,000 lb/MWh or more. The 2023 file writes large
+# numbers with a thousands separator ("2,169.248"); the 2021 file did not, and
+# the build's parser did not expect it. Measured on the fossil units in the WECC
+# model: where the raw rate is below 1,000 lb/MWh the asset value equals it on
+# 490 of 490 units, and where it is 1,000 or more it equals it on 0 of 720 --
+# 62 of 63 coal units, 546 gas units, 112 oil units, 45 GW in all. Coal came out
+# at 87 kg/MWh capacity-weighted against 1,048 in the build made from the 2021
+# file. 67 of the file's 150 columns carry separators.
+#
+# Capacities and heat rates are untouched: they come from NEEDS, not eGRID, and
+# are identical between the two builds. So this is an accounting fault, not a
+# dispatch one, and the rates are read here directly rather than by rebuilding
+# the dataset.
+EGRID_PLANT_CSV = REPO_ROOT / "good_datasets-main" / "Data" / "US" / "Raw" / "egrid2023_data.csv"
+EGRID_ORIS_COLUMN = "DOE/EIA ORIS plant or facility code"
+EGRID_CO2_RATE_COLUMN = "Plant annual CO2 total output emission rate (lb/MWh)"
+KG_PER_LB = 0.45359237
+
+_EGRID_CO2: dict[str, float] | None = None
+
+
+def oris_key(value) -> str | None:
+    """ORIS plant code as a plain integer string, or None."""
+    try:
+        return str(int(float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def egrid_plant_co2_kg_per_mwh() -> dict[str, float]:
+    """ORIS code -> plant CO2 output emission rate in kg/MWh, from eGRID 2023.
+
+    Plant-level, so every unit at a plant shares one rate. A plant with no rate
+    is left out. A rate of zero is kept: for a geothermal or biomass plant it is
+    the reported value, and the caller decides what it means for a fossil one.
+    """
+    global _EGRID_CO2
+    if _EGRID_CO2 is not None:
+        return _EGRID_CO2
+    _EGRID_CO2 = {}
+    if not EGRID_PLANT_CSV.is_file():
+        print(f"  WARNING: {EGRID_PLANT_CSV} missing; emission rates fall back to heat rates")
+        return _EGRID_CO2
+    import pandas as pd
+
+    df = pd.read_csv(EGRID_PLANT_CSV, dtype=str, low_memory=False,
+                     usecols=[EGRID_ORIS_COLUMN, EGRID_CO2_RATE_COLUMN])
+    rate = pd.to_numeric(df[EGRID_CO2_RATE_COLUMN].str.replace(",", "", regex=False), errors="coerce")
+    for code, lb in zip(df[EGRID_ORIS_COLUMN], rate):
+        key = oris_key(code)
+        if key is not None and pd.notna(lb) and lb >= 0:
+            _EGRID_CO2.setdefault(key, float(lb) * KG_PER_LB)
+    return _EGRID_CO2
+
+
+# kg CO2 per million Btu of fuel burned. EIA, "Carbon Dioxide Emissions
+# Coefficients", released 18 September 2024.
+CO2_KG_PER_MMBTU = {"coal": 95.99, "natural gas": 52.91, "oil": 74.14}
+
+# Fuels that fall back to heat rate x carbon content when the plant has no
+# usable eGRID rate, and for which a plant rate of zero means "no output
+# reported that year" and so is not a rate.
+PLANT_RATE_FALLBACK_FUELS = ("coal", "natural gas", "oil")
+
+# Fuels that burn nothing. They take zero whatever eGRID lists for the plant
+# code they share. Without this a solar field on the same ORIS code as a gas
+# plant inherits the gas plant's rate, which makes the median for "solar"
+# positive, and the median fallback then spreads it to every solar unit with no
+# rate of its own: 0.49 Mt of CO2 from solar in a four-week run, caught in
+# testing before it reached any result.
+NON_EMITTING_FUELS = ("solar", "wind", "hydro", "nuclear", "battery", "pump hydro")
+
+
+def emission_factor(fuel, oris, heat_rate_btu_per_kwh, published) -> tuple[float, str]:
+    """kg CO2 per MWh for one asset, and where the number came from.
+
+    In order: zero for a fuel that burns nothing; the plant's own rate in eGRID
+    2023; for coal, gas and oil at a plant with no usable rate, the unit's heat
+    rate times the fuel's carbon content; otherwise the value published on the
+    asset, which may be missing and is then filled from the fuel's median by the
+    caller.
+    """
+    fuel = str(fuel).lower()
+    if fuel in NON_EMITTING_FUELS:
+        return 0.0, "non_emitting"
+    key = oris_key(oris)
+    plant = egrid_plant_co2_kg_per_mwh().get(key) if key is not None else None
+    if plant is not None and (plant > 0 or fuel not in PLANT_RATE_FALLBACK_FUELS):
+        return float(plant), "egrid2023_plant"
+    try:
+        hr = float(heat_rate_btu_per_kwh)
+    except (TypeError, ValueError):
+        hr = float("nan")
+    if fuel in PLANT_RATE_FALLBACK_FUELS and hr > 0:
+        return hr / 1000.0 * CO2_KG_PER_MMBTU[fuel], "heat_rate"
+    try:
+        value = float(published)
+    except (TypeError, ValueError):
+        value = float("nan")
+    return value, "published"
+
+
+# Sources whose value is a reported number even when it is zero, so the fuel
+# median must not overwrite it.
+KNOWN_FACTOR_SOURCES = ("egrid2023_plant", "non_emitting", "heat_rate")

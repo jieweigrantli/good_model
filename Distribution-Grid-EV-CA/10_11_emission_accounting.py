@@ -12,17 +12,23 @@ served, and hourly generation by fuel.
 
 Emission-factor sets
 --------------------
-The published per-asset ``co2`` in WEC.json is unusable for coal (a fifth of what
-the units' own heat rates imply) and arguable for gas, so no single set is
-reported alone:
-
-  unit_heat_rate_coal    coal = unit heat rate x 95.99 kg/MMBtu; other fuels as
-                         published. The accounting 10_01 writes. PRIMARY.
-  coal_subbituminous     as primary, coal at 97.13 kg/MMBtu (western coal)
-  all_fossil_heat_rate   coal, gas and oil all from unit heat rates
+  egrid2023_plant        each plant's own CO2 output rate from eGRID 2023, read
+                         from the raw file by ORIS code; coal, gas and oil at a
+                         plant with no usable rate use heat rate x carbon
+                         content; fuels that burn nothing are zero. The
+                         accounting 10_01 writes. PRIMARY.
+  egrid2023_checked      as primary, but a coal, gas or oil unit whose plant rate
+                         is outside 0.5 to 1.5 times what its own heat rate
+                         implies takes the heat-rate value. A plant rate is a
+                         plant average, so a peaker beside a combined cycle, or
+                         gas units at a site that also reports solar, carry a
+                         rate their heat rate does not support.
+  unit_heat_rate         coal, gas and oil all from unit heat rates
   eia_fuel_average_2023  flat per fuel: coal 1,048, gas 435, oil 1,116 kg/MWh
-  published              the input's own values. Wrong for coal; kept so earlier
-                         results stay traceable.
+  published              the values on the assets in WEC_modified.json. Wrong
+                         for every plant at or above 1,000 lb/MWh, because the
+                         build mis-read thousands separators in the 2023 file;
+                         kept so earlier results stay traceable.
 
 Coefficients are EIA's "Carbon Dioxide Emissions Coefficients" (released
 2024-09-18); the fuel averages are EIA's 2023 pounds of CO2 per kWh.
@@ -67,43 +73,77 @@ sys.path.insert(0, str(PKG))
 
 import common as C
 
-KG_PER_MMBTU = {"coal": 95.99, "natural gas": 52.91, "oil": 74.14}
-KG_PER_MMBTU_SUBBITUMINOUS = 97.13
 LB_PER_KWH_2023 = {"coal": 2.31, "natural gas": 0.96, "oil": 2.46}
-KG_PER_LB = 0.45359237
-PRIMARY = "unit_heat_rate_coal"
+PRIMARY = "egrid2023_plant"
+CHECK_BAND = (0.5, 1.5)     # plant rate over heat-rate-implied rate
+SETS = [PRIMARY, "egrid2023_checked", "unit_heat_rate", "eia_fuel_average_2023", "published"]
 
 
-def _with_fallback(g: pd.DataFrame, ef: pd.Series) -> pd.Series:
-    """Rows with no usable factor take the median of their own fuel."""
+_ORIS_BY_HANDLE: dict[str, str] | None = None
+
+
+def _oris_by_handle() -> dict[str, str]:
+    """Asset handle -> ORIS code, from the model's own input file."""
+    global _ORIS_BY_HANDLE
+    if _ORIS_BY_HANDLE is None:
+        _ORIS_BY_HANDLE = {}
+        with open(C.resolve_wec_json(), encoding="utf-8") as fh:
+            for node in json.load(fh)["nodes"]:
+                for handle, asset in (node.get("assets") or {}).items():
+                    key = C.oris_key(asset.get("oris_code"))
+                    if key is not None:
+                        _ORIS_BY_HANDLE.setdefault(handle, key)
+    return _ORIS_BY_HANDLE
+
+
+def _with_fallback(g: pd.DataFrame, ef: pd.Series, known: pd.Series) -> pd.Series:
+    """Rows with no usable factor take the median of their own fuel.
+
+    ``known`` marks rows whose value is a reported number even when it is zero.
+    """
     ef = pd.to_numeric(ef, errors="coerce")
-    have = ef.fillna(0.0) > 0
-    med = ef[have].groupby(g.loc[have, "fuel"]).median()
+    have = (ef.fillna(0.0) > 0) | (known & ef.notna())
+    pos = ef.fillna(0.0) > 0
+    med = ef[pos].groupby(g.loc[pos, "fuel"]).median()
     return ef.where(have, g["fuel"].map(med)).fillna(0.0)
 
 
-def _from_heat_rate(g: pd.DataFrame, base: pd.Series, coef: dict[str, float]) -> pd.Series:
-    out = base.copy()
-    hr = pd.to_numeric(g["heat_rate_btu_per_kWh"], errors="coerce")
-    for fuel, c in coef.items():
-        m = (g["fuel"] == fuel) & (hr > 0)
-        out[m] = hr[m] / 1000.0 * c
-    return out
-
-
 def factor_sets(g: pd.DataFrame) -> dict[str, pd.Series]:
-    primary = _with_fallback(g, g["co2_kg_per_MWh"])
-    published = _with_fallback(g, g["co2_kg_per_MWh_published"])
+    # A table written before the plant codes were saved gets them from the input
+    # file, by the handle each asset name starts with.
+    if "oris_code" not in g.columns:
+        lookup = _oris_by_handle()
+        g["oris_code"] = g["asset"].map(lambda a: lookup.get(str(a).split("__")[0]))
+    hr = pd.to_numeric(g["heat_rate_btu_per_kWh"], errors="coerce")
+    published = pd.to_numeric(g["co2_kg_per_MWh_published"], errors="coerce")
+    fuel = g["fuel"].astype(str).str.lower()
+
+    rule = [C.emission_factor(f, o, h, pb) for f, o, h, pb in zip(fuel, g["oris_code"], hr, published)]
+    value = pd.Series([r[0] for r in rule], index=g.index)
+    origin = pd.Series([r[1] for r in rule], index=g.index)
+    known = origin.isin(C.KNOWN_FACTOR_SOURCES)
+    primary = _with_fallback(g, value, known)
+
+    coef = fuel.map(C.CO2_KG_PER_MMBTU)
+    from_hr = (hr / 1000.0 * coef).where((hr > 0) & coef.notna())
+
+    ratio = primary / from_hr
+    off = (origin == "egrid2023_plant") & from_hr.notna() & ((ratio < CHECK_BAND[0]) | (ratio > CHECK_BAND[1]))
+    checked = primary.where(~off, from_hr)
+
+    heat = primary.where(from_hr.isna(), from_hr)
+
     flat = primary.copy()
-    for fuel, lb in LB_PER_KWH_2023.items():
-        flat[g["fuel"] == fuel] = lb * KG_PER_LB * 1000.0
-    return {
-        PRIMARY: primary,
-        "coal_subbituminous": _from_heat_rate(g, primary, {"coal": KG_PER_MMBTU_SUBBITUMINOUS}),
-        "all_fossil_heat_rate": _from_heat_rate(g, primary, KG_PER_MMBTU),
-        "eia_fuel_average_2023": flat,
-        "published": published,
-    }
+    for f, lb in LB_PER_KWH_2023.items():
+        flat[fuel == f] = lb * C.KG_PER_LB * 1000.0
+
+    non_emitting = fuel.isin(C.NON_EMITTING_FUELS)
+    pub = _with_fallback(g, published.where(~non_emitting, 0.0), non_emitting)
+
+    g["_origin"] = origin
+    g["_off_band"] = off
+    return {PRIMARY: primary, "egrid2023_checked": checked, "unit_heat_rate": heat,
+            "eia_fuel_average_2023": flat, "published": pub}
 
 
 def main() -> None:
@@ -124,10 +164,18 @@ def main() -> None:
     rows, fuel_rows = [], []
     for s in scen:
         g = pd.read_csv(root / s / "generation_by_asset.csv")
-        if "co2_kg_per_MWh_published" not in g.columns:
-            raise SystemExit(f"{s}/generation_by_asset.csv predates the heat-rate accounting; re-run {s}.")
+        if "co2_kg_per_MWh_published" not in g.columns or "heat_rate_btu_per_kWh" not in g.columns:
+            raise SystemExit(f"{s}/generation_by_asset.csv predates the saved heat rates; re-run {s}.")
         bal = json.load(open(root / s / "balance.json", encoding="utf-8"))
-        for name, ef in factor_sets(g).items():
+        sets = factor_sets(g)
+        if s == args.reference:
+            fos = g["fuel"].isin(C.PLANT_RATE_FALLBACK_FUELS) & (g["energy_MWh"] > 0)
+            src_gwh = (g.loc[fos, "energy_MWh"].groupby(g.loc[fos, "_origin"]).sum() / 1e3).round(0).to_dict()
+            off_gwh = float(g.loc[fos & g["_off_band"], "energy_MWh"].sum()) / 1e3
+            coverage = (f"fossil energy in {s} by source of its factor, GWh: {src_gwh}; "
+                        f"{off_gwh:,.0f} GWh on units whose plant rate is outside "
+                        f"{CHECK_BAND[0]} to {CHECK_BAND[1]} x their heat-rate value")
+        for name, ef in sets.items():
             kg = g["energy_MWh"] * ef
             rows.append({"ef_set": name, "scenario": s, "co2_t": float(kg.sum()) / 1e3,
                          "served_GWh": bal["served_MWh"] / 1e3, "shortfall_GWh": bal["shortfall_MWh"] / 1e3})
@@ -202,7 +250,13 @@ def main() -> None:
     print(f"emission accounting for {args.tag}, reference {args.reference}, baseline {args.baseline}\n")
     print("CO2 by factor set (Mt):")
     print(A.pivot(index="scenario", columns="ef_set", values="co2_t").div(1e6).round(4)
-          [[PRIMARY, "coal_subbituminous", "all_fossil_heat_rate", "eia_fuel_average_2023", "published"]].to_string())
+          [SETS].to_string())
+    print()
+    print(coverage)
+    byf = pd.DataFrame(fuel_rows)
+    ref_f = byf[(byf["scenario"] == args.reference) & byf["fuel"].isin(["coal", "natural gas", "oil"])]
+    print(f"\nkg/MWh as dispatched in {args.reference}:")
+    print(ref_f.pivot(index="fuel", columns="ef_set", values="kg_per_MWh")[SETS].round(0).to_string())
     print(f"\nrate at which the model serves added load ({args.baseline} -> {args.reference}), kg/MWh:")
     print(R.drop_duplicates("ef_set").set_index("ef_set")["marginal_rate_reference_kg_per_MWh"].round(0).to_string())
     print(f"\nprimary factor set ({PRIMARY}); positive = the intervention emits less than {args.reference}:")

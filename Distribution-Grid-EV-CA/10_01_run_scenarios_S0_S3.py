@@ -222,31 +222,35 @@ def _solver_kw(horizon: str, scenario: str, log_path: Path | None = None, crosso
     return {"solver": "gurobi", "tee": True, "options": {"io_api": "direct", **opts}}
 
 
-# kg CO2 per million Btu of fuel burned. EIA, "Carbon Dioxide Emissions
-# Coefficients", released 18 September 2024.
-CO2_KG_PER_MMBTU = {"coal": 95.99, "natural gas": 52.91, "oil": 74.14}
-
-# Fuels whose published per-asset factor is replaced by the unit's own heat rate
-# times the fuel's carbon content.
+# Where each asset's emission factor comes from, in order:
 #
-# Coal has to be. WEC.json's ``co2`` for coal is not usable: 32 of the 68 WECC
-# coal units carry zero and the rest carry 68 to 271 kg/MWh, about a fifth of
-# what the same units' heat rates imply, so coal was being counted at 195 kg/MWh
-# generation-weighted against roughly 1,000 for real coal. Every one of those
-# units does carry a realistic heat rate (median 10,597 Btu/kWh), so the factor
-# is rebuilt per unit: 1,001 kg/MWh generation-weighted, 900 to 1,300 across
-# units, against EIA's national 1,048 for 2023.
+#   1. eGRID 2023, the plant's own CO2 output emission rate, read straight from
+#      the raw file by ORIS code (common.egrid_plant_co2_kg_per_mwh).
+#   2. For coal, gas and oil at a plant with no usable 2023 rate, the unit's heat
+#      rate times the fuel's carbon content.
+#   3. Otherwise the value published on the asset, and failing that the median
+#      of the asset's fuel (see _emission_factors).
 #
-# This went unnoticed while coal barely moved between scenarios. It moves now:
-# corridor relief displaces 159 GWh of it and a storage fleet charging off-peak
-# adds 45 GWh, so the placeholder understated P_cong by more than half and
-# flipped the sign of the storage result.
+# The value on the asset is no longer first because it is wrong for every plant
+# emitting 1,000 lb/MWh or more: the build that produced WEC_modified.json
+# mis-read the thousands separators in the 2023 file, which lost the rate for 62
+# of 63 coal units, 546 gas units and 112 oil units. Coal was being counted at
+# 195 kg/MWh as dispatched. Read correctly it is 1,063, and gas is 465 where the
+# asset values gave 368.
 #
-# Gas is left on its published factors. They average 368 kg/MWh as dispatched
-# against 498 from heat rates and 435 for EIA's national figure, so neither
-# basis is clearly right and the gap is 15%, not a factor of five. 10_11 reports
-# both, along with other factor sets, as a range.
-HEAT_RATE_EF_FUELS = ("coal",)
+# The first attempt at this rebuilt coal alone from heat rates, before the cause
+# was known. That landed close for coal (1,001) and left the gas and oil units
+# with the same fault uncorrected.
+#
+# A plant rate is a plant average, and that is its limit. Every unit at a plant
+# shares it, so a peaker beside a combined cycle, or gas units at a site that
+# also reports solar, carry a rate their own heat rate does not support: 103 of
+# 762 dispatched fossil units, 6% of fossil energy, sit outside 0.5 to 1.5 times
+# what their heat rate implies. 10_11 reports a second set with those replaced
+# by the heat-rate value, so the effect is visible as a range.
+#
+# The rule itself is common.emission_factor, shared with 10_11 so the two cannot
+# drift apart. Fuels that burn nothing take zero whatever plant code they share.
 
 
 def _generation_totals(solution_graph, graph=None, time_step: float = 1.0) -> pd.DataFrame:
@@ -257,11 +261,12 @@ def _generation_totals(solution_graph, graph=None, time_step: float = 1.0) -> pd
     attributes and are NOT echoed into the v2 solution graph, so *graph* -- the
     built graph the solve ran on -- has to be passed to recover them.
 
-    ``co2_kg_per_MWh`` is the factor the accounting uses; the value published on
-    the asset is kept beside it as ``co2_kg_per_MWh_published``. ``fuel_MMBtu``
-    is the fuel burned, so any carbon coefficient can be applied after the solve
-    without going back to the input data.
+    ``co2_kg_per_MWh`` is the factor the accounting uses and ``co2_source`` says
+    where it came from. The eGRID plant rate and the value published on the asset
+    are both kept beside it, with the ORIS code, heat rate and fuel burned, so any
+    other set of factors can be applied after the solve.
     """
+    egrid = C.egrid_plant_co2_kg_per_mwh()
     rows = []
     for node_name, node_data in solution_graph._node.items():
         source_assets = ((graph._node.get(node_name) or {}).get("assets") or {}) if graph is not None else {}
@@ -278,9 +283,9 @@ def _generation_totals(solution_graph, graph=None, time_step: float = 1.0) -> pd
             # v2 heat rates are in Btu/kWh (good.migrate converts them from J/J).
             heat_rate = pd.to_numeric(source.get("heat_rate", asset_data.get("heat_rate")), errors="coerce")
             has_hr = bool(pd.notna(heat_rate) and heat_rate > 0)
-            factor = published
-            if fuel in HEAT_RATE_EF_FUELS and has_hr:
-                factor = float(heat_rate) / 1000.0 * CO2_KG_PER_MMBTU[fuel]
+            oris = C.oris_key(source.get("oris_code", asset_data.get("oris_code")))
+            plant = egrid.get(oris) if oris is not None else None
+            factor, origin = C.emission_factor(fuel, oris, heat_rate if has_hr else None, published)
             rows.append(
                 {
                     "node": node_name,
@@ -290,7 +295,10 @@ def _generation_totals(solution_graph, graph=None, time_step: float = 1.0) -> pd
                     "mean_MW": float(arr.mean()) if arr.size else 0.0,
                     # kg CO2 per MWh of electricity, as used. See _emissions_kg.
                     "co2_kg_per_MWh": factor,
+                    "co2_source": origin,
+                    "co2_kg_per_MWh_egrid2023": plant if plant is not None else np.nan,
                     "co2_kg_per_MWh_published": published,
+                    "oris_code": oris,
                     "heat_rate_btu_per_kWh": float(heat_rate) if has_hr else np.nan,
                     "fuel_MMBtu": energy * float(heat_rate) / 1000.0 if has_hr else np.nan,
                     # What a portfolio standard is written on.
@@ -312,8 +320,13 @@ def _emission_factors(gen_df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     overrides every coal row.
     """
     ef = pd.to_numeric(gen_df.get("co2_kg_per_MWh"), errors="coerce")
-    have = ef.fillna(0.0) > 0
-    fuel_median = gen_df[have].groupby("fuel")["co2_kg_per_MWh"].median() if have.any() else pd.Series(dtype=float)
+    positive = ef.fillna(0.0) > 0
+    have = positive
+    if "co2_source" in gen_df.columns:
+        # a zero from a known source is a reported value, not a gap to fill
+        have = have | (gen_df["co2_source"].isin(C.KNOWN_FACTOR_SOURCES) & ef.notna())
+    # the median is taken over positive values only, as 10_11 does
+    fuel_median = gen_df[positive].groupby("fuel")["co2_kg_per_MWh"].median() if positive.any() else pd.Series(dtype=float)
     fallback = gen_df["fuel"].map(fuel_median)
     used = ef.where(have, fallback).fillna(0.0)
     fell_back = (~have) & (fallback.fillna(0.0) > 0)
@@ -345,12 +358,12 @@ def _emissions_kg(gen_df: pd.DataFrame) -> float:
     the consequential EV emission factor falls from 771 g/kWh to roughly the
     mid-300s, and every absolute tonnage roughly halves.
 
-    That correction was right for gas and wrong for coal. Moving to the asset
-    values replaced a coal constant that was somewhat high with published values
-    that are a fifth of the truth, and it went unnoticed because coal barely
-    moved between the scenarios then being compared. Coal now takes its factor
-    from each unit's heat rate; see ``HEAT_RATE_EF_FUELS``. Two things remain
-    handled here rather than silently:
+    That correction traded one error for another. The asset values are wrong
+    for every plant emitting 1,000 lb/MWh or more, which is all of coal, and it
+    went unnoticed because coal barely moved between the scenarios then being
+    compared. Factors now come from eGRID 2023 directly; see
+    ``common.emission_factor``. Two things remain handled here rather than
+    silently:
 
     * ``ASTR_COAL_CO2`` overrides every coal unit with one value in kg/MWh.
     * **Fossil producers with no usable factor** fall back to the median of
