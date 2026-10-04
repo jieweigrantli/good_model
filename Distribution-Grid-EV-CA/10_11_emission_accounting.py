@@ -154,7 +154,10 @@ def main() -> None:
                     "consequential_t": e[args.reference] - e[s],
                     "average_t": (e[args.reference] / d[args.reference] - e[s] / d[s]) * d[s],
                     "marginal_t": e[args.reference] + r * dd - e[s],
-                    "rate_on_extra_load_kg_per_MWh": (e[s] - e[args.reference]) / dd * 1e3 if abs(dd) > 1.0 else np.nan,
+                    # Undefined when the intervention serves no more load than the
+                    # reference: the curtailment fleet changes emissions by tens of
+                    # kt and load served by 0.03 GWh, and the ratio is noise.
+                    "rate_on_extra_load_kg_per_MWh": (e[s] - e[args.reference]) / dd * 1e3 if abs(dd) > 1000.0 else np.nan,
                 })
             out.append(rec)
     R = pd.DataFrame(out)
