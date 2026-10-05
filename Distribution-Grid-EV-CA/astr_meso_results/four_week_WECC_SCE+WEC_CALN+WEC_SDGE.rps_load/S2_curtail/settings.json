@@ -1,0 +1,8 @@
+{
+  "no_capex": true,
+  "rps_noncompliance_cost_per_MWh": 50.0,
+  "rps_basis": "load",
+  "bess_csv": "data\\meso\\bess_sized_to_curtailment.csv",
+  "line_csv": null,
+  "out_suffix": "curtail"
+}

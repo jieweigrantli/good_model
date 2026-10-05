@@ -1,0 +1,2 @@
+node,wastage_MWh,wastage_GWh,peak_MW,mean_MW,hours_spilling,hours_free,longest_run_h,longest_run_MWh
+WECC_IID,74176.24490700464,74.17624490700464,748.4719999829999,110.38131682589976,222,450,12,6793.751201874317
