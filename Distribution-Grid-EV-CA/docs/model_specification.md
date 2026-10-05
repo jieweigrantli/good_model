@@ -1273,6 +1273,41 @@ is 34.1% for 2021 and 44.8% for 2025. How the standard should be written for as-
 dispatch, and for which year, is an open decision; nothing has been changed beyond the
 non-compliance cost.
 
+**The generator fleet is not a fleet that existed, and its wind is over-stated twice.**
+Checked against eGRID 2023 (`10_12`), every version of the run burns about half the gas
+the West actually did and about a quarter more coal, and California is a net exporter
+where it actually imports at least 17% of what it consumes. Three properties of the
+supply data account for most of that, and none has been changed.
+
+*Projected plants are in the fleet.* 79 assets, 22,496 MW, have no plant code and no
+location, and sit on the balancing-area buses. Each matches, one to one by region and
+capacity, a row labelled "New" in `needs_v617_parsed.csv` — EPA's IPM v6.17 output for
+its 2023 run year. They are what that model projected would be built by 2023: 9,169 MW
+of solar, 8,423 MW of wind, 2,683 MW of gas, a 1,000 MW import, 570 MW of geothermal
+and 365 MW of batteries. 7,795 MW of the wind is in California, which in fact added
+about 400 MW; the wind that was really built went to New Mexico, Wyoming, Colorado,
+Montana and Arizona.
+
+*The located fleet is the IPM v6.17 vintage.* State by state it equals the existing
+units in that output exactly. NEEDS v6.21 is in the repository and is not what the
+fleet is built from. Against eGRID 2023 the West has 21,051 MW of located wind where
+30,745 MW exists, and 16,482 MW of located solar where 39,378 MW exists; adding the
+projected plants brings wind to 29,474 MW, in the wrong states, and solar to 25,651 MW.
+Battery storage is 600 MW.
+
+*All wind runs on the best resource class.* The wind profile in every region is IPM
+Table 4-39 resource class 1, the table's best sites, mean capacity factor 0.50
+(correlation with the model's profile 1.000). Existing western wind runs at 0.29 in
+IPM's own output and California's ran at 0.25 in 2023.
+
+Together these give California 58 TWh of wind a year against 14 actual: 26 TWh from
+the 5,923 MW that exists, running at twice its real output, and 33 TWh from the 7,795
+MW that does not. That surplus displaces gas and imports. It also means the wind
+curtailed at Tehachapi, and the spill the curtailment-sited storage is sized on, come
+from real plants given roughly twice their real output. The builder's source is not in
+`good_datasets-main` (only compiled files), so any correction would be applied when
+the pipeline loads the data, as the eGRID emission rates are.
+
 **The network build was not reproducible, and that was found by trying to measure
 the feed fix.** Diffing the rebuilt network against the previous one showed the
 synthetic feeds changing as intended — and sixteen unrelated corridors moving as
