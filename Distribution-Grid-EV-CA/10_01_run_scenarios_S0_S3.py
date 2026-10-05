@@ -1204,6 +1204,7 @@ def run_horizon(
     rps_noncompliance_cost: float | None = None,
     rps_basis: str = "generation",
     tag_suffix: str | None = None,
+    rps_year: int | None = None,
 ) -> pd.DataFrame:
     import good
     from good import migrate
@@ -1235,6 +1236,15 @@ def run_horizon(
     base_nlg = _disable_solar_wind_capex(base_nlg)
 
     network_blob = _nest._load_network()
+    fleet = C.fleet_name(wec_path)
+    # Networks built before the fleet was recorded were all built on the IPM fleet.
+    built_on = network_blob.get("fleet") or "ipm"
+    if built_on != fleet:
+        raise SystemExit(
+            f"The substation network was built on the '{built_on}' fleet and this run reads "
+            f"'{fleet}' ({wec_path.name}). Plants are mapped to substations when the network "
+            f"is built, so rebuild it with 09_01, or set ASTR_FLEET={built_on}.")
+    print(f"  fleet: {fleet} ({wec_path.name})")
     hub_ids, ev_kW, tot_kW = _hub_load_arrays("weekly" if week else horizon, week)
 
     with open(C.POLICIES_JSON, encoding="utf-8") as fh:
@@ -1245,6 +1255,21 @@ def run_horizon(
     # translation, so the published policy file stays in its original form and
     # the RPS ratios remain traceable to it. All 32 state standards convert.
     policies = migrate.convert_policies(policies)
+
+    # policies.json carries the 2025 ratios. A fleet of another year is held to
+    # that year's.
+    if rps_year is not None:
+        ratios = C.rps_ratios(rps_year)
+        changed = []
+        for handle, pol in policies.items():
+            state = handle[len("rps_"):]
+            if pol.get("_class") == "Portfolio_Standard" and handle.startswith("rps_") and state in ratios:
+                if abs(float(pol.get("ratio") or 0.0) - ratios[state]) > 1e-9:
+                    changed.append(state)
+                pol["ratio"] = ratios[state]
+        ca = policies.get("rps_CA", {}).get("ratio")
+        print(f"  RPS: {rps_year} ratios ({len(changed)} states differ from the published 2025 file; "
+              f"California {ca:.4f})")
 
     # See astr_v2.RPS_NONCOMPLIANCE_COST. None leaves each standard as the hard
     # limit it is in the published file.
@@ -1472,6 +1497,8 @@ def run_horizon(
                 "no_capex": bool(no_capex),
                 "rps_noncompliance_cost_per_MWh": rps_noncompliance_cost,
                 "rps_basis": rps_basis,
+                "rps_year": rps_year if rps_year is not None else 2025,
+                "fleet": fleet,
                 "bess_csv": str(bess_csv) if bess_csv is not None else None,
                 "line_csv": str(line_csv) if line_csv is not None else None,
                 "out_suffix": out_suffix,
@@ -1711,6 +1738,13 @@ def main() -> None:
              "does not constrain the solve.",
     )
     parser.add_argument(
+        "--rps-year",
+        type=int,
+        default=None,
+        help="Take each state's RPS ratio for this year from the ReEDS table the published "
+             "policy file was built from. Default: the published file as it is, which is 2025.",
+    )
+    parser.add_argument(
         "--tag-suffix",
         default=None,
         help="Appended to the results tag, so a variant of the whole run writes beside the "
@@ -1861,6 +1895,7 @@ def main() -> None:
                 rps_noncompliance_cost=rps_cost,
                 rps_basis=args.rps_basis,
                 tag_suffix=args.tag_suffix,
+                rps_year=args.rps_year,
             )
     else:
         run_horizon(
@@ -1882,6 +1917,7 @@ def main() -> None:
             rps_noncompliance_cost=rps_cost,
             rps_basis=args.rps_basis,
             tag_suffix=args.tag_suffix,
+            rps_year=args.rps_year,
         )
     print(f"\nResults under {C.ASTR_RESULTS_DIR}")
 

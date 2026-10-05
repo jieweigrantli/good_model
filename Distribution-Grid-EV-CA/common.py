@@ -86,7 +86,14 @@ RUNS_FOUR_WEEK_PARQUET = RESULTS_DIR / "S0_S3_four_week_runs.parquet"
 
 WEC_JSON = REPO_ROOT / "Examples" / "WEC.json"
 WEC_MODIFIED_JSON = REPO_ROOT / "Examples" / "WEC_modified.json"
+WEC_EGRID2023_JSON = REPO_ROOT / "Examples" / "WEC_egrid2023.json"
 POLICIES_JSON = REPO_ROOT / "Examples" / "policies.json"
+RPS_FRACTION_CSV = REPO_ROOT / "good_datasets-main" / "Data" / "US" / "Raw" / "rps_fraction.csv"
+
+# The generator fleets the pipeline can read. "egrid2023" is the fleet that
+# existed in 2023, written by 08_19. "ipm" is EPA's IPM v6.17 fleet with its
+# projected plants, which the first sets of results were run on.
+FLEETS = {"egrid2023": WEC_EGRID2023_JSON, "ipm": WEC_MODIFIED_JSON, "base": WEC_JSON}
 
 # California Albers Equal Area (meters) — required for ASTR spatial joins
 CA_ALBERS_CRS = "EPSG:3310"
@@ -207,11 +214,56 @@ def is_meso_delivery_node(node_id: str) -> bool:
     return s.startswith("SUB_") or s.startswith("MESO_")
 
 
-def resolve_wec_json() -> Path:
-    """Prefer WEC_modified.json when present; otherwise Examples/WEC.json."""
-    if WEC_MODIFIED_JSON.is_file():
-        return WEC_MODIFIED_JSON
+def resolve_wec_json(fleet: str | None = None) -> Path:
+    """The generator fleet file.
+
+    ``fleet``, or failing that the ASTR_FLEET environment variable, names one of
+    FLEETS. With neither, the 2023 fleet is used when it has been built, then
+    WEC_modified.json, then Examples/WEC.json.
+    """
+    fleet = fleet or os.environ.get("ASTR_FLEET")
+    if fleet:
+        if fleet not in FLEETS:
+            raise ValueError(f"Unknown fleet {fleet!r}; choose from {sorted(FLEETS)}")
+        return require_file(FLEETS[fleet])
+    for path in (WEC_EGRID2023_JSON, WEC_MODIFIED_JSON):
+        if path.is_file():
+            return path
     return WEC_JSON
+
+
+def fleet_name(path: Path | None = None) -> str:
+    """The name in FLEETS of a fleet file; of the one in use if none is given."""
+    path = Path(path) if path is not None else resolve_wec_json()
+    return next((name for name, p in FLEETS.items() if p == path), path.name)
+
+
+def results_fleet_json(scenario_dir: Path) -> Path:
+    """The fleet file a solved scenario was run on.
+
+    A run records its fleet in settings.json. Results with no record predate the
+    2023 fleet and were all run on WEC_modified.json.
+    """
+    settings = Path(scenario_dir) / "settings.json"
+    name = None
+    if settings.is_file():
+        with open(settings, encoding="utf-8") as fh:
+            name = json.load(fh).get("fleet")
+    return resolve_wec_json(name or "ipm")
+
+
+def rps_ratios(year: int) -> dict[str, float]:
+    """State RPS ratios for a year, from the ReEDS table policies.json was built from.
+
+    policies.json holds the 2025 column of this table. The ratios are shares of a
+    state's electricity sales.
+    """
+    require_file(RPS_FRACTION_CSV)
+    df = pd.read_csv(RPS_FRACTION_CSV)
+    df = df[df["t"] == int(year)]
+    if df.empty:
+        raise ValueError(f"{RPS_FRACTION_CSV.name} has no year {year}")
+    return {str(st): float(v) for st, v in zip(df["st"], df["rps_all"])}
 
 
 def require_file(path: Path, hint: str = "") -> Path:

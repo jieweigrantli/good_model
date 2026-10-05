@@ -3,17 +3,18 @@
 
 Does the model run plants the way they actually ran?
 
-Compares the fossil generation each variant of the run dispatches, by state and
-fuel, with what eGRID 2023 reports those states' plants generated. The no-EV
-scenario is the one compared, since 2023 had little EV load, and its four
-seasonal weeks are scaled to a year (x 8760 / 672).
+Compares the generation each variant of the run dispatches, by state and fuel,
+with what eGRID 2023 reports those states' plants generated. The no-EV scenario
+is the one compared, since 2023 had little EV load, and its four seasonal weeks
+are scaled to a year (x 8760 / 672).
 
-It is a coarse check and is meant as one. The model's generator list is NEEDS
-v6.21, its demand is not 2023's, and four weeks are not a year. A state whose gas
-fleet runs at a third or at three times its actual output is still a finding.
+It is a coarse check and is meant as one. The model's demand is not 2023's and
+four weeks are not a year. A state whose gas fleet runs at a third or at three
+times its actual output is still a finding.
 
 A variant is a results directory: the reference tag, or the tag with a suffix
-such as ".rps_hard" or ".rps_load".
+such as ".rps_load" or ".fleet2023". Each is read against the generator fleet it
+was run on.
 
 Writes dispatch_check.csv beside the reference results.
 """
@@ -35,7 +36,13 @@ import common as C
 
 WEST = ["CA", "AZ", "NV", "NM", "UT", "CO", "WY", "MT", "ID", "OR", "WA"]
 EGRID_GEN = {"coal": "Plant annual coal net generation (MWh)",
-             "natural gas": "Plant annual gas net generation (MWh)"}
+             "natural gas": "Plant annual gas net generation (MWh)",
+             "wind": "Plant annual wind net generation (MWh)",
+             "solar": "Plant annual solar net generation (MWh)",
+             "hydro": "Plant annual hydro net generation (MWh)",
+             "nuclear": "Plant annual nuclear net generation (MWh)"}
+LABELS = {".rps_hard": "hard RPS", "": "RPS $50", ".rps_load": "RPS on load",
+          ".fleet2023": "2023 fleet, RPS $50", ".fleet2023.rps_load": "2023 fleet, RPS on load"}
 CA_BAS = ("WECC_IID", "WECC_SCE", "WEC_BANC", "WEC_CALN", "WEC_LADW", "WEC_SDGE")
 
 
@@ -44,7 +51,7 @@ def _num(s: pd.Series) -> pd.Series:
 
 
 def actual_2023() -> pd.DataFrame:
-    """TWh of coal and gas generation by state, from the eGRID 2023 plant file."""
+    """TWh of generation by state and fuel, from the eGRID 2023 plant file."""
     cols = ["Plant state abbreviation"] + list(EGRID_GEN.values())
     df = pd.read_csv(C.EGRID_PLANT_CSV, dtype=str, low_memory=False, usecols=cols)
     out = pd.DataFrame({fuel: _num(df[col]).groupby(df["Plant state abbreviation"]).sum() / 1e6
@@ -63,23 +70,23 @@ def _parent_ba(node: str) -> str:
     return _BA.get(node) or node
 
 
-_ATTR: dict[str, dict] | None = None
+_ATTR: dict[Path, dict[str, dict]] = {}
 
 
-def _attrs() -> dict[str, dict]:
-    global _ATTR
-    if _ATTR is None:
-        _ATTR = {}
-        with open(C.resolve_wec_json(), encoding="utf-8") as fh:
+def _attrs(fleet_json: Path) -> dict[str, dict]:
+    """Asset attributes by handle, from the fleet file the results were run on."""
+    if fleet_json not in _ATTR:
+        _ATTR[fleet_json] = {}
+        with open(fleet_json, encoding="utf-8") as fh:
             for node in json.load(fh)["nodes"]:
                 for handle, asset in (node.get("assets") or {}).items():
-                    _ATTR.setdefault(handle, asset)
-    return _ATTR
+                    _ATTR[fleet_json].setdefault(handle, asset)
+    return _ATTR[fleet_json]
 
 
 def modelled(run_dir: Path, scenario: str) -> tuple[pd.DataFrame, dict]:
     g = pd.read_csv(run_dir / scenario / "generation_by_asset.csv")
-    attrs = _attrs()
+    attrs = _attrs(C.results_fleet_json(run_dir / scenario))
     base = g["asset"].map(lambda a: attrs.get(str(a).split("__")[0]) or {})
     if "jurisdiction" not in g.columns:
         g["jurisdiction"] = base.map(lambda a: a.get("jurisdiction"))
@@ -89,10 +96,10 @@ def modelled(run_dir: Path, scenario: str) -> tuple[pd.DataFrame, dict]:
         hours = 672.0
         bal = json.load(fh)
     scale = 8760.0 / hours
-    fossil = g[g["fuel"].isin(EGRID_GEN)]
-    twh = (fossil.groupby(["jurisdiction", "fuel"])["energy_MWh"].sum().unstack() * scale / 1e6).reindex(WEST)
-    cf = (fossil.groupby(["jurisdiction", "fuel"])["energy_MWh"].sum()
-          / (fossil.groupby(["jurisdiction", "fuel"])["MW"].sum() * hours)).unstack().reindex(WEST)
+    cmp_ = g[g["fuel"].isin(EGRID_GEN)]
+    twh = (cmp_.groupby(["jurisdiction", "fuel"])["energy_MWh"].sum().unstack() * scale / 1e6).reindex(WEST)
+    cf = (cmp_.groupby(["jurisdiction", "fuel"])["energy_MWh"].sum()
+          / (cmp_.groupby(["jurisdiction", "fuel"])["MW"].sum() * hours)).unstack().reindex(WEST)
     extra = {"served_GWh": bal["served_MWh"] / 1e3}
     # California's own balance. Generation and dumped energy at nodes in its six
     # balancing areas are in every variant's files; its demand is only written by
@@ -114,13 +121,13 @@ def modelled(run_dir: Path, scenario: str) -> tuple[pd.DataFrame, dict]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tag", default="four_week_WECC_SCE+WEC_CALN+WEC_SDGE")
-    ap.add_argument("--variants", nargs="*", default=[".rps_hard", "", ".rps_load"],
+    ap.add_argument("--variants", nargs="*", default=["", ".rps_load", ".fleet2023", ".fleet2023.rps_load"],
                     help="Suffixes on the tag; '' is the reference run.")
     ap.add_argument("--scenario", default="S0")
     args = ap.parse_args()
 
     act = actual_2023()
-    labels = {".rps_hard": "hard RPS", "": "RPS $50", ".rps_load": "RPS on load"}
+    labels = LABELS
     runs = {}
     for suffix in args.variants:
         d = C.ASTR_RESULTS_DIR / f"{args.tag}{suffix}"
@@ -144,7 +151,7 @@ def main() -> None:
 
     pd.set_option("display.width", 220)
     names = list(runs)
-    print(f"fossil generation in {args.scenario}, scaled to a year, against eGRID 2023 (TWh)\n")
+    print(f"generation in {args.scenario}, scaled to a year, against eGRID 2023 (TWh)\n")
     for fuel in EGRID_GEN:
         t = out[out["fuel"] == fuel].set_index("state")
         show = t[["actual_2023_TWh"] + [f"{n}_TWh" for n in names]].copy()
@@ -169,6 +176,8 @@ def main() -> None:
         f"{n} {runs[n][1]['cf'].loc['CA', 'natural gas']:.2f}" for n in names))
     print("capacity factor of Arizona coal:   " + ", ".join(
         f"{n} {runs[n][1]['cf'].loc['AZ', 'coal']:.2f}" for n in names))
+    print("capacity factor of California wind: " + ", ".join(
+        f"{n} {runs[n][1]['cf'].loc['CA', 'wind']:.2f}" for n in names))
 
 
 if __name__ == "__main__":

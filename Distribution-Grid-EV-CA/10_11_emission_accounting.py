@@ -80,6 +80,8 @@ SETS = [PRIMARY, "egrid2023_checked", "unit_heat_rate", "eia_fuel_average_2023",
 
 
 _ORIS_BY_HANDLE: dict[str, str] | None = None
+# Set by main() to the fleet the results were run on.
+_FLEET_JSON: Path | None = None
 
 
 def _oris_by_handle() -> dict[str, str]:
@@ -87,7 +89,7 @@ def _oris_by_handle() -> dict[str, str]:
     global _ORIS_BY_HANDLE
     if _ORIS_BY_HANDLE is None:
         _ORIS_BY_HANDLE = {}
-        with open(C.resolve_wec_json(), encoding="utf-8") as fh:
+        with open(_FLEET_JSON or C.resolve_wec_json(), encoding="utf-8") as fh:
             for node in json.load(fh)["nodes"]:
                 for handle, asset in (node.get("assets") or {}).items():
                     key = C.oris_key(asset.get("oris_code"))
@@ -154,6 +156,8 @@ def main() -> None:
     args = ap.parse_args()
 
     root = C.ASTR_RESULTS_DIR / args.tag
+    global _FLEET_JSON
+    _FLEET_JSON = C.results_fleet_json(root / args.reference)
     scen = sorted(d.name for d in root.iterdir()
                   if d.is_dir() and not d.name.endswith(".stale")
                   and (d / "generation_by_asset.csv").is_file() and (d / "balance.json").is_file())

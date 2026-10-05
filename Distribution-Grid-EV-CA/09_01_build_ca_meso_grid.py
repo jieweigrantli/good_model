@@ -1493,8 +1493,11 @@ def voltage_tier_gateways(
     hubs_ix = hubs.set_index("hub_id")
 
     rows = []
-    for comp in nx.connected_components(g):
-        members = hubs_ix.loc[list(comp)]
+    # Sorted, because a set of names iterates in an order that changes from one
+    # Python process to the next, and the order of these rows is the order the
+    # gateway lines enter the LP.
+    for comp in sorted(nx.connected_components(g), key=min):
+        members = hubs_ix.loc[sorted(comp)]
         candidates = [hid for hid in members.index if incident_hv_capacity.get(hid, 0.0) > 0]
         if candidates:
             component_peak_w = float(members["total_peak_W"].sum()) if "total_peak_W" in members else 0.0
@@ -1731,6 +1734,9 @@ def main(aggregate: int | None = None, no_synthetic_feeds: bool = False) -> None
             for i, r in enumerate(hubs.itertuples())
         ],
         "edges": edges.to_dict(orient="records"),
+        # the generator file the mapping below was made from; a run on another
+        # fleet would leave that fleet's plants off the substations
+        "fleet": C.fleet_name(),
         "generators": generators,
         "bess_candidates": bess,
         "interties": interties,
