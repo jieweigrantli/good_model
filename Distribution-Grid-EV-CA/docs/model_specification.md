@@ -1308,6 +1308,139 @@ from real plants given roughly twice their real output. The builder's source is 
 `good_datasets-main` (only compiled files), so any correction would be applied when
 the pipeline loads the data, as the eGRID emission rates are.
 
+**The fleet is now the one that existed in 2023 (`08_19`).** `08_19` compares the
+model's plants with the generator sheet of eGRID 2023 (`egrid2023_data_rev2.xlsx`,
+sheet GEN23, every generator with its fuel, nameplate and status) and writes
+`Examples/WEC_egrid2023.json`. `WEC_modified.json` is untouched and the results run
+on it keep their folders. `common.resolve_wec_json()` picks the fleet, the
+`ASTR_FLEET` variable overrides it (`egrid2023` or `ipm`), every run records its fleet
+in `settings.json`, and a run stops if the substation network was built on a different
+fleet from the one it reads.
+
+The rules, per plant and fuel:
+
+- a model asset with no plant code is a projected plant and is removed (78 assets,
+  21,496 MW). IPM's 1,000 MW import is kept, since it is a boundary flow;
+- where eGRID has no operating generator of a fuel at a plant, the model's units of
+  that fuel are removed (450 assets, 5,865 MW, of which 1,371 MW coal);
+- where eGRID has a fuel at a plant and the model does not, it is added; where both
+  have it the model's units are kept, with their unit heat rates and costs, and the
+  difference is added only if eGRID shows more than 1.5 times the model's capacity
+  (1,163 assets, 51,017 MW added, 26,465 MW of it in California);
+- gas and oil are compared together, as are biomass and waste, and hydro and pumped
+  hydro, since the two sources label the same unit differently.
+
+| MW | before | removed | added | after | eGRID 2023 nameplate |
+|---|---:|---:|---:|---:|---:|
+| natural gas + oil | 73,947 | 5,246 | 11,526 | 80,227 | 91,542 |
+| hydro + pumped hydro | 54,984 | 597 | 673 | 55,061 | 53,974 |
+| solar | 25,665 | 9,481 | 18,343 | 34,527 | 34,684 |
+| wind | 29,504 | 9,142 | 9,215 | 29,577 | 29,721 |
+| coal | 23,994 | 1,371 | 124 | 22,747 | 23,844 |
+| battery | 600 | 409 | 9,815 | 10,006 | 10,016 |
+| all fuels | 221,862 | 27,361 | 51,017 | 245,517 | 257,276 |
+
+eGRID capacity is nameplate and the model's is net, so an added thermal unit is divided
+by the ratio measured on the plants both sources hold (gas and oil 1.10, coal 1.09,
+geothermal 1.18, nuclear and biomass 1.04). That is why gas stays below its nameplate
+total. Wind, solar and batteries are taken at nameplate.
+
+What eGRID does not give is filled from the model's own units. Operating cost is the
+regional median cost per unit of heat times the new unit's heat rate, and the heat rate
+is eGRID's plant figure. A battery gets the four hours `good.migrate` gives every
+existing battery, since eGRID reports power only. The model region is the plant's
+balancing-authority code where that names one region, and otherwise the majority of the
+five nearest plants with the same code. Tested by leaving each known plant out in turn,
+the rule is right for 98.1% of plants and 98.8% of capacity. For the California
+authorities the vote is limited to regions the authority runs, because IPM drew its
+regions on a map: it files 120 plants (9,189 MW) outside their balancing authority,
+among them 73 California ISO plants under LADWP. Those stay where IPM has them; new
+plants do not follow them.
+
+*Wind and solar now produce what they produced.* Each region's profile is set to the
+2023 capacity factor of its own plants (generators online before 2023, from the same
+sheet). The hourly shape is the IPM resource class whose mean is nearest that figure,
+scaled to match, since scaling the class-1 shape down would stop wind ever reaching
+nameplate. Wind goes from 0.41–0.50 to 0.20–0.39 by region and solar from 0.15–0.24 to
+0.17–0.28. A region with fewer than three plants or under 100 MW of the fuel takes its
+state's figure: LADWP's wind is one 135 MW plant that ran at 5% in 2023. The previous
+profile is kept in the file under `…:ipm_default`.
+
+*RPS ratios.* Runs on this fleet take the 2023 column of the same ReEDS table
+(`--rps-year 2023`; California 0.3933 against 0.4476 for 2025).
+
+*What the substation network gains and where it is still wrong.* 2,546 California
+assets are mapped to substations, up from 2,114, and only the import is left on a
+balancing-area bus. The three nested areas hold 76.1 GW of injection capacity, up from
+51.7. The plants added are mostly solar and storage built after the substation data
+was compiled, and their collector stations are not in it: 64 plant sites, 17.3 GW, have
+no substation within 15 km rated to collect them (30 sites and 7.9 GW before) and sit
+on the nearest node. At 32 substations the capacity attached exceeds the lines that
+leave, by 9.1 GW in total (21 substations and 2.8 GW before). The largest are an
+unnamed Edison node with 1,066 MW of battery and 884 MW of solar behind 290 MW of
+line, Blythe, Ormond Beach and Henrietta. Energy spilled there in S1 is a product of
+the snap and is released when corridors are relaxed, so it counts toward S3's gain.
+Nothing has been changed for it.
+
+*One more source of irreproducibility.* The gateway rows were built by iterating a set
+of substation names, whose order changes between Python processes. The rows held the
+same gateways and capacities each time, in a different order, so the LP's columns
+moved. They are now sorted and three consecutive builds are byte-identical.
+
+**Results on the 2023 fleet.** All eight scenarios, 2023 RPS ratios, in two forms of the
+standard: on load served (`.fleet2023.rps_load`) and the published form at $50/MWh
+(`.fleet2023`). Four weeks, eGRID 2023 plant rates, positive = less CO2 than S1.
+
+| | unserved GWh | spill GWh | consequential kt, on load | consequential kt, $50 |
+|---|---:|---:|---:|---:|
+| S0 | 61.71 | 574 | — | — |
+| S1 | 85.99 | 573 | — | — |
+| S2, on every EV substation | 80.33 | 569 | −1.5 | −3.0 |
+| S2_shift_node | 44.17 | 573 | −24.1 | −30.6 |
+| S2_shift_pocket | 44.06 | 573 | −24.8 | −32.8 |
+| S2_curtail | 85.99 | 236 | +95.8 | +137.9 |
+| S3, corridors ×10 | 32.86 | 31 | +294.0 | +533.8 |
+| S4, corridors + transformers ×10 | 0.00 | 31 | +278.1 | +506.2 |
+
+Unserved load and spill are from the load-served run; unserved load is the same in the
+other to 0.2 GWh, and spill there is 539 GWh. S1 emits 16.18 Mt on load served and
+17.90 Mt in the published form, and added EV load is served at 486 and 766 kg/MWh.
+
+*Unserved load is stable.* Against the IPM fleet S1 moved from 90.09 to 85.99 GWh.
+Storage on the unserved load relieves 41.9 GWh, 49%, and corridor relief 53.1, 62%.
+32.8 of the 32.9 GWh left in S3 is at 44 substations whose published or ICA rating is
+below their peak load; Wabash (SDG&E) holds 17.2 of it, a 16.9 MW rating against 72 MW
+of allocated load.
+
+*Spill nearly doubled and all of it is local.* 542 of the 573 GWh is at substations and
+none of that survives S3, so there is no system-wide surplus in these weeks. 225 GWh is
+at the 32 substations where attached capacity exceeds the outgoing lines. The corridor
+saving and the curtailment-storage saving are both mostly released spill, so both carry
+that fault.
+
+*Dispatch against eGRID 2023 (`10_12`, S0 scaled to a year).* Wind is now 76.5 TWh
+against 79.7 across the West and 14.1 against 14.0 in California; solar 74.1 against
+71.4. The two forms of the standard then pull thermal dispatch apart. On load served,
+coal is 1.05 of actual and gas 0.71, California gas is 1.29 and California exports 5% of
+its load. In the published form the standard binds harder than it did on the IPM fleet,
+which had four times the California wind: California gas is 0.60 of actual, the state
+imports 19% of its load, and coal is 1.32 across the West. Hydro is 1.22 in both, 33 TWh
+a year over.
+
+**Plants counted twice in every three-utility run (found 4 October, not yet fixed).**
+`build_nested_graph` (`09_02`) attaches a mapped plant to its substation from
+`gen_by_hub`, which holds every plant whose substation is in a nested area.
+`_strip_mapped_ca_assets` removes the plant from its balancing-area bus only if that
+*area* is nested. A plant filed under LADWP or BANC whose nearest substation belongs to
+a nested utility is therefore attached to the substation and left on its own bus. 156
+plants, 3,285 MW (gas 1,920, solar 694, oil 446, wind 137); 157 and 3,159 MW on the IPM
+fleet. In S1 the bus copies generate 874 GWh and the substation copies 719, so about
+1.2% of generation comes from a second copy. It is in all five configurations. The fix
+is to keep one copy, the one on the plant's own bus, and solve again.
+
+A summary of the model, the runs and these results, with maps, is
+`docs/astr2026_summary.html`, built by `10_13_summary_figures.py`.
+
 **The network build was not reproducible, and that was found by trying to measure
 the feed fix.** Diffing the rebuilt network against the previous one showed the
 synthetic feeds changing as intended — and sixteen unrelated corridors moving as

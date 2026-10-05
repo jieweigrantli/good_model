@@ -1,0 +1,547 @@
+<title>ASTR2026 Model Summary</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,600;1,400&family=Source+Sans+3:wght@400;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  /* Layout: one reading column for text, full-width plates for maps and tables. */
+  :root {
+    --ground: #F7F8FA;
+    --surface: #FFFFFF;
+    --plate: #FFFFFF;
+    --ink: #16202B;
+    --muted: #5A6878;
+    --rule: #DCE2E9;
+    --copper: #B45F3C;
+    --copper-wash: #F6ECE7;
+    --ok: #2F6B52;
+    --ok-wash: #E8F1EC;
+    --warn: #8A6410;
+    --warn-wash: #F7F0DF;
+    --stop: #9B3B33;
+    --stop-wash: #F7E9E7;
+    --bar: #C0392B;
+
+    --display: "Spectral", Georgia, "Times New Roman", serif;
+    --body: "Source Sans 3", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #10161D; --surface: #171F28; --plate: #F3F4F6; --ink: #E4E9EF; --muted: #93A1B1; --rule: #2A3540;
+      --copper: #D4825C; --copper-wash: #2A1D17; --ok: #6FB894; --ok-wash: #16241E; --warn: #CFA247; --warn-wash: #251F12;
+      --stop: #D97E74; --stop-wash: #271714; --bar: #D9665A; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #10161D; --surface: #171F28; --plate: #F3F4F6; --ink: #E4E9EF; --muted: #93A1B1; --rule: #2A3540;
+    --copper: #D4825C; --copper-wash: #2A1D17; --ok: #6FB894; --ok-wash: #16241E; --warn: #CFA247; --warn-wash: #251F12;
+    --stop: #D97E74; --stop-wash: #271714; --bar: #D9665A; color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: var(--body); font-size: 16.5px; line-height: 1.6; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; padding-inline: 22px; padding-block: 52px 88px; display: flex; flex-direction: column; gap: 52px; }
+  .col { max-width: 68ch; display: flex; flex-direction: column; gap: 0.85em; }
+  h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; font-weight: 600; }
+  h1 { font-size: clamp(2rem, 5vw, 2.8rem); line-height: 1.12; letter-spacing: -0.015em; }
+  h2 { font-size: 1.55rem; line-height: 1.2; padding-top: 14px; border-top: 2px solid var(--ink); }
+  h3 { font-size: 1.12rem; line-height: 1.3; margin-top: 8px; }
+  p { margin: 0; }
+  ul { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 0.4em; }
+  a { color: var(--copper); }
+  a:focus-visible { outline: 2px solid var(--copper); outline-offset: 2px; }
+  code, .m { font-family: var(--mono); font-size: 0.86em; font-variant-numeric: tabular-nums; }
+  .lede { font-size: 1.14rem; color: var(--muted); max-width: 68ch; }
+  .eyebrow { font-family: var(--mono); font-size: 0.7rem; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--copper); }
+
+  header { display: flex; flex-direction: column; gap: 14px; }
+  .runline { font-family: var(--mono); font-size: 0.78rem; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 18px; }
+  .runline b { color: var(--ink); font-weight: 500; }
+  nav.toc { display: flex; flex-wrap: wrap; gap: 6px 8px; font-size: 0.9rem; }
+  nav.toc a { text-decoration: none; padding: 3px 10px; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); }
+  nav.toc a:hover { border-color: var(--copper); color: var(--copper); }
+
+  section { display: flex; flex-direction: column; gap: 20px; scroll-margin-top: 12px; }
+
+  /* headline figures */
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+  .metric { background: var(--surface); padding: 18px 20px; display: flex; flex-direction: column; gap: 5px; }
+  .metric .k { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.05em; color: var(--muted); }
+  .metric .v { font-family: var(--mono); font-size: 1.6rem; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+  .metric .n { font-size: 0.84rem; color: var(--muted); line-height: 1.45; }
+
+  /* status notes */
+  .notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 22px; }
+  .note { border-left: 3px solid var(--rule); padding: 2px 0 2px 16px; display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+  .note.ok { border-color: var(--ok); } .note.warn { border-color: var(--warn); } .note.stop { border-color: var(--stop); }
+  .note .tag { font-family: var(--mono); font-size: 0.7rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; }
+  .note.ok .tag { color: var(--ok); } .note.warn .tag { color: var(--warn); } .note.stop .tag { color: var(--stop); }
+  .note p, .note li { font-size: 0.95rem; }
+
+  /* tables */
+  .tw { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+  caption { text-align: left; font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); padding-bottom: 10px; }
+  th, td { padding: 8px 12px; text-align: right; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th:first-child, td:first-child { text-align: left; }
+  thead th { font-family: var(--mono); font-size: 0.7rem; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--ink); white-space: nowrap; vertical-align: bottom; }
+  table.wrap-head thead th { white-space: normal; min-width: 84px; }
+  thead th.span { text-align: center; border-bottom: 1px solid var(--rule); color: var(--ink); }
+  td.num { font-family: var(--mono); font-size: 0.84rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: none; }
+  tr.grp td { font-family: var(--mono); font-size: 0.68rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--copper); padding-top: 16px; border-bottom: 1px solid var(--rule); }
+  td.sub { padding-left: 28px; color: var(--muted); }
+  table.text td, table.text th { text-align: left; }
+  table.text td { font-size: 0.92rem; }
+  table.text td:first-child { white-space: nowrap; font-weight: 600; }
+  table.text td.wrap1 { white-space: normal; min-width: 150px; }
+  .scen { font-family: var(--mono); font-weight: 600; font-size: 0.86rem; white-space: nowrap; }
+  .what { color: var(--muted); margin-left: 9px; font-size: 0.86rem; font-weight: 400; font-family: var(--body); }
+  .ratio { color: var(--muted); font-size: 0.76rem; margin-left: 6px; }
+
+  /* bars */
+  .bars { display: flex; flex-direction: column; gap: 8px; }
+  .bar-row { display: grid; grid-template-columns: minmax(150px, 380px) 1fr 52px; gap: 12px; align-items: center; }
+  .bar-lab { min-width: 0; }
+  .bar-track { background: var(--rule); height: 14px; min-width: 60px; }
+  .bar-fill { background: var(--bar); height: 100%; }
+  .bar-val { font-family: var(--mono); font-size: 0.86rem; text-align: right; font-variant-numeric: tabular-nums; }
+  @media (max-width: 640px) {
+    .bar-row { grid-template-columns: 1fr 52px; }
+    .bar-lab { grid-column: 1 / -1; }
+    .what { display: block; margin-left: 0; }
+  }
+
+  /* figures: white plates, since the maps are drawn on white */
+  figure { margin: 0; display: flex; flex-direction: column; gap: 10px; }
+  figure .plate { background: var(--plate); border: 1px solid var(--rule); padding: 10px; }
+  figure img { display: block; width: 100%; height: auto; max-width: 100%; }
+  figcaption { font-size: 0.9rem; color: var(--muted); max-width: 78ch; }
+  figcaption b { color: var(--ink); font-weight: 600; }
+
+  .pill { font-family: var(--mono); font-size: 0.68rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; padding: 2px 7px; white-space: nowrap; }
+  .pill.ok { background: var(--ok-wash); color: var(--ok); } .pill.warn { background: var(--warn-wash); color: var(--warn); }
+  .pill.stop { background: var(--stop-wash); color: var(--stop); }
+  .formula { font-family: var(--mono); font-size: 0.86rem; background: var(--surface); border: 1px solid var(--rule); padding: 12px 16px; overflow-x: auto; white-space: pre; }
+  footer { font-size: 0.86rem; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 18px; }
+</style>
+<!--BODY-->
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">ASTR2026 · California substation layer in GOOD 2.x</div>
+  <h1>Storage against transmission for EV-driven congestion</h1>
+  <p class="lede">What has been built, what has been run, what the results say today, and what still stands between them and a paper.</p>
+  <div class="runline">
+    <span>Results of <b>4 October 2026</b></span>
+    <span>Branch <b>v2-migration</b>, code at <b>76ce87f</b></span>
+    <span>Horizon <b>four seasonal weeks, 672 h</b></span>
+    <span>Nested <b>PG&amp;E, SCE, SDG&amp;E</b></span>
+    <span>Solver <b>Gurobi barrier</b></span>
+  </div>
+  <nav class="toc" aria-label="Sections">
+    <a href="#glance">At a glance</a><a href="#model">Model</a><a href="#network">Network</a><a href="#data">Data</a>
+    <a href="#inputs">Load, fleet, policy</a><a href="#scenarios">Scenarios run</a><a href="#results">Results</a>
+    <a href="#fixed">Faults fixed</a><a href="#open">Not yet fixed</a><a href="#limits">Limitations</a>
+    <a href="#next">Next steps</a><a href="#repro">Reproduce</a>
+  </nav>
+</header>
+
+<section id="glance">
+  <h2>At a glance</h2>
+  <div class="col">
+    <p>The study asks how much of the load that California's delivery network cannot serve once EV charging is added can be recovered by batteries at substations, compared with building transmission. The model is a linear program: a substation-level network of the three investor-owned utilities, nested inside a balancing-area model of the Western Interconnection, dispatched over four seasonal weeks with the grid as built.</p>
+    <p>All figures below are from the run on the 2023 generator fleet with the renewable standard applied to load served. They cover four weeks.</p>
+  </div>
+  <div class="metrics">
+    <div class="metric"><div class="k">UNSERVED LOAD, S1</div><div class="v">86.0 GWh</div><div class="n">on 129 substations. 61.7 GWh is there without EV charging; EV load adds 24.3.</div></div>
+    <div class="metric"><div class="k">STORAGE ON IT RELIEVES</div><div class="v">41.9 GWh</div><div class="n">49% of the unserved load, with 2,515 MW and 22,029 MWh.</div></div>
+    <div class="metric"><div class="k">CORRIDORS ×10 RELIEVE</div><div class="v">53.1 GWh</div><div class="n">62%. Relaxing transformers as well removes all of it.</div></div>
+    <div class="metric"><div class="k">LEFT ON TRANSFORMERS</div><div class="v">32.9 GWh</div><div class="n">nearly all at 44 substations whose published rating is below their load.</div></div>
+    <div class="metric"><div class="k">WIND AND SOLAR SPILLED</div><div class="v">573 GWh</div><div class="n">all behind a line limit. At least 225 GWh comes from how plants are attached.</div></div>
+  </div>
+  <div class="notes">
+    <div class="note ok">
+      <div class="tag">Holds across every run</div>
+      <ul>
+        <li>Unserved load and what relieves it. The figures move by under 5% between the two fleets and by 0.2 GWh at most between renewable-standard treatments.</li>
+        <li>Storage sited on the unserved load recovers about half of it, and about 80% of what corridor relief recovers.</li>
+        <li>Placing half the storage on neighbouring substations adds 0.1 GWh. Location inside a pocket does not matter.</li>
+      </ul>
+    </div>
+    <div class="note warn">
+      <div class="tag">Depends on an open choice</div>
+      <ul>
+        <li>Every CO2 figure. The corridor case saves between 164 and 534 kt across the five configurations, and the sign of the storage figure depends on how newly served load is counted.</li>
+        <li>Spill, and the storage fleet sited on it, depend on where new solar and storage plants are attached.</li>
+      </ul>
+    </div>
+    <div class="note stop">
+      <div class="tag">Found while writing this, not fixed</div>
+      <ul>
+        <li>156 plants, 3,285 MW, are in every three-utility run twice. See <a href="#open">Not yet fixed</a>.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="model">
+  <h2>The model</h2>
+  <div class="col">
+    <p><b>Structure.</b> One linear program with two tiers. The upper tier is 16 balancing areas of the Western Interconnection, ten outside California and six inside. The lower tier replaces PG&amp;E, SCE and SDG&amp;E with their substations: 2,387 nodes and 3,778 corridors. LADWP, BANC and IID stay as one bus each. Each nested utility keeps a bus for the rest of its system, reached from the substations through 195 gateways.</p>
+    <p><b>Physics.</b> Transmission is a transport model: each corridor carries up to its rating in either direction, with losses, and nothing enforces Kirchhoff's voltage law. A substation's net import over its lines is capped by its transformer rating, so power passing through at transmission voltage is not limited and power stepped down to local load is. Voltage, reactive power and contingencies are not represented.</p>
+    <p><b>Dispatch.</b> The grid is taken as built: no capacity can be added, apart from the storage each scenario prescribes. Load that cannot be delivered is unserved at $10,000/MWh. Wind and solar output above what the network can take is spilled. Storage is 90% efficient and its state of charge is continuous across all 672 hours.</p>
+    <p><b>Horizon.</b> The first week of March, June, September and December, solved as one problem of 672 hours. The renewable standards are budgets over the whole horizon, so the weeks cannot be solved separately.</p>
+    <p><b>Size.</b> 3.4 million rows, 12.0 million columns, 28.7 million non-zeros. Gurobi's barrier method solves a scenario in 7 to 10 minutes; the scenario with a battery on every EV substation takes 30.</p>
+  </div>
+  <h3>What is compared</h3>
+  <div class="col">
+    <p>Each intervention is compared with S1, the EV load on the grid as built. The first measure is load served. The second is CO2, and it needs a convention, because an intervention that serves load S1 could not serve also emits for that load.</p>
+  </div>
+  <div class="tw"><table class="text">
+    <thead><tr><th>Convention</th><th>Definition</th><th>What it answers</th></tr></thead>
+    <tbody>
+      <tr><td>Consequential</td><td class="wrap1">E(S1) − E(X)</td><td class="wrap1">Total emissions, with the extra load's emissions charged to the intervention.</td></tr>
+      <tr><td>Average</td><td class="wrap1">CO2 per MWh served in each case, times the load served in X</td><td class="wrap1">Whether the system got cleaner per unit delivered.</td></tr>
+      <tr><td>Marginal</td><td class="wrap1">Consequential, with the extra load credited at the rate the model serves added load, from S0 to S1</td><td class="wrap1">Emissions on an equal-load basis.</td></tr>
+      <tr><td>Facts</td><td class="wrap1">Extra load in GWh and the emission rate on it</td><td class="wrap1">The two quantities the others are built from.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="col"><p>All four are saved for every scenario, with hourly generation, fuel burned and CO2 by fuel, so emission factors can be changed without solving again.</p></div>
+</section>
+
+<section id="network">
+  <h2>The network</h2>
+  <div class="col">
+    <p>WECC does not publish transmission topology, so connectivity is rebuilt from line geometry and checked against the sources that name line terminals. Statewide the build holds 3,105 substations and 4,944 corridors. The three nested utilities account for 2,387 and 3,778.</p>
+  </div>
+  <figure>
+    <div class="plate"><img src="{{fig:01_topology}}" alt="Map of California showing the reconstructed corridors coloured by voltage class, substations, the three utility territories and five named WECC path terminals."></div>
+    <figcaption><b>The network the solver sees.</b> One straight edge per substation-to-substation corridor, coloured by voltage. Dashed boxes mark the three detail panels below. LADWP, BANC and IID substations are drawn hollow: their networks are built but each area is solved as a single bus in these runs.</figcaption>
+  </figure>
+  <figure>
+    <div class="plate"><img src="{{fig:02_utility_detail}}" alt="Three detail maps: the Bay Area for PG&E, the Los Angeles basin for SCE and San Diego for SDG&E, showing corridors by voltage, substations sized by peak load and gateways."></div>
+    <figcaption><b>One panel per utility.</b> Substations are sized by their peak load in the four weeks. Squares are gateways, where a substation on a line of 230 kV or more connects to the bus that stands for the rest of its utility's system.</figcaption>
+  </figure>
+  {{frag:utility_table}}
+  <h3>How the topology is built</h3>
+  <div class="col">
+    <ul>
+      <li>Line endpoints snap to a substation within 1,500 m, and only to one rated at or above the line's voltage.</li>
+      <li>A line that passes through a substation is split there. Without that step a substation sitting on the wire was invisible, because only endpoints were examined.</li>
+      <li>Runs of pass-through geometry are contracted to corridors along a minimum spanning tree. Joining every pair of terminals produced corridors that do not exist, one of them 499 km long.</li>
+      <li>HIFLD names both terminals of lines of 100 kV and above, and OpenStreetMap links lines through shared nodes. Where either agrees with the geometry the corridor is confirmed; where it names a pair the geometry missed, the corridor is added.</li>
+      <li>A component that no source connects gets a tagged radial feed, sized to the larger of its peak load and its generation. 247 of the 3,778 corridors are such feeds.</li>
+      <li>Corridor ratings come from a voltage lookup: 500 kV is 1,500 MVA, 345 is 1,000, 230 is 400, 161 is 250, 138 is 200, 115 is 150, 69 is 80 and 60 is 60.</li>
+      <li>Plants of 100 MW or more keep their own switchyard as a node. A large plant further than 1 km from any substation is moved to the nearest one within 15 km whose voltage can collect it.</li>
+    </ul>
+  </div>
+  <figure>
+    <div class="plate"><img src="{{fig:03_provenance}}" alt="Two maps of California. Left: corridors coloured by how they are known. Right: substations coloured by the source of their transformer rating."></div>
+    <figcaption><b>What is documented and what is inferred.</b> Half the corridors rest on line geometry alone, almost all of them below 100 kV, where HIFLD names no terminals. Ratings are measured for most of PG&amp;E and for the Los Angeles basin, and derived from assigned load elsewhere.</figcaption>
+  </figure>
+</section>
+
+<section id="data">
+  <h2>Data behind each layer</h2>
+  <div class="tw"><table class="text">
+    <thead><tr><th>Layer</th><th>Source</th><th>Used for</th></tr></thead>
+    <tbody>
+      <tr><td>PG&amp;E substations, feeders, lines</td><td class="wrap1">PG&amp;E GRIP: EDSubstations, FeederDetail, TransmissionLines</td><td class="wrap1">Nodes, corridor geometry, feeder-to-substation mapping</td></tr>
+      <tr><td>PG&amp;E substation load</td><td class="wrap1">GRIP SubstationLoadProfile, 288 month-hours</td><td class="wrap1">Measured base load at 632 substations</td></tr>
+      <tr><td>PG&amp;E hosting capacity</td><td class="wrap1">ICA detailed results, 20 division files, 2,979 feeders</td><td class="wrap1">Transformer rating as measured load plus remaining headroom</td></tr>
+      <tr><td>SCE substations and load</td><td class="wrap1">SCE DRPEP: ICA, Grid Needs Assessment, circuit inventory</td><td class="wrap1">Ratings; measured base load at 528 substations, published in amperes</td></tr>
+      <tr><td>SDG&amp;E</td><td class="wrap1">ICA, 107 substations</td><td class="wrap1">Ratings at 64 of 167 substations, as section headroom plus projected load. No load profiles are published</td></tr>
+      <tr><td>Substations and lines, national</td><td class="wrap1">HIFLD</td><td class="wrap1">Nodes outside PG&amp;E, named line terminals, plant switchyards</td></tr>
+      <tr><td>Power infrastructure, crowd-sourced</td><td class="wrap1">OpenStreetMap: 3,981 substations, 43,841 lines</td><td class="wrap1">Confirming corridors, chaining lines through shared nodes</td></tr>
+      <tr><td>Utility territories, balancing areas</td><td class="wrap1">California Energy Commission</td><td class="wrap1">Assigning substations to utilities, masking load assignment</td></tr>
+      <tr><td>Base load</td><td class="wrap1">NREL county hourly demand, 2019</td><td class="wrap1">Load where no utility publishes a substation profile</td></tr>
+      <tr><td>EV charging</td><td class="wrap1">CSTDM travel zones and the Li and Jenn charging model</td><td class="wrap1">Hourly charging load by zone</td></tr>
+      <tr><td>Generators, costs, profiles</td><td class="wrap1">EPA IPM v6.17 through GOOD's dataset; EPA eGRID 2023 generator and plant files</td><td class="wrap1">The fleet, its dispatch cost, wind and solar output</td></tr>
+      <tr><td>Emission rates</td><td class="wrap1">eGRID 2023 plant CO2 output rates; EIA carbon content where a plant has none</td><td class="wrap1">CO2 per MWh by plant</td></tr>
+      <tr><td>Renewable standards</td><td class="wrap1">NREL ReEDS state ratios</td><td class="wrap1">State renewable shares, 2023 column</td></tr>
+    </tbody>
+  </table></div>
+  <div class="col">
+    <p>Three readings matter more than the rows. <b>Corridor capacity is measured nowhere.</b> No public source gives thermal ratings, so the layer that sets corridor congestion is the least grounded one. <b>Base load is measured in PG&amp;E and SCE and allocated in SDG&amp;E.</b> In San Diego the transformer limit compares an allocated load with a published rating, and nothing arbitrates when they disagree. <b>The municipal utilities publish no capacity data</b> and will not; Li and Jenn left them out for the same reason.</p>
+  </div>
+</section>
+
+<section id="inputs">
+  <h2>Load, fleet and policy</h2>
+  <h3>Load</h3>
+  <div class="col">
+    <p>EV charging goes from travel zone to census block to feeder to substation, following Li and Jenn: home charging by block population, workplace and public charging by jobs, blocks to feeders by intersection, feeders to substations by the utility's own records. Assignments are masked to the assigning utility's territory, which removed 190,139 cross-territory assignments.</p>
+    <p>Base load is the utility's published substation profile where one exists. Only the remainder, the area total less the measured profiles, is allocated, and it goes to the utility's bus and not onto unmeasured substations. Among unmeasured neighbours within 5 km, base load is split by published rating. EV load is never reallocated.</p>
+    <p>In the four weeks the three utilities peak at 41.9 GW together. EV charging peaks at 3.3 GW and is 8.0% of their energy, about 17 TWh a year.</p>
+  </div>
+  <figure>
+    <div class="plate"><img src="{{fig:04_load_and_fleet}}" alt="Two maps of California. Left: substation peak load, coloured by the EV share of that peak. Right: the 2023 generator fleet by fuel and capacity at each substation."></div>
+    <figcaption><b>Load and supply as the model holds them.</b> Left, peak load by substation and how much of it is EV charging. Right, the 2023 fleet where it attaches; a dark outline marks capacity added from eGRID 2023, most of it solar and storage in the southern desert and the San Joaquin Valley.</figcaption>
+  </figure>
+  <h3>The 2023 fleet</h3>
+  <div class="col">
+    <p>The fleet GOOD ships for the West is EPA's IPM v6.17 list of existing units, about 2018, plus 78 plants that model projected would be built by 2023, with all wind on the best resource class at a 50% capacity factor. It gave California 58 TWh of wind a year against 14 actual. <code>08_19</code> now compares the list with eGRID 2023, generator by generator: projected plants are removed, units no longer operating are removed, missing plants are added, and each region's wind and solar profile is set to the capacity factor its plants had in 2023.</p>
+  </div>
+  <div class="tw"><table>
+    <thead><tr><th>MW, whole West</th><th>IPM fleet</th><th>Removed</th><th>Added</th><th>2023 fleet</th><th>eGRID 2023 nameplate</th></tr></thead>
+    <tbody>
+      <tr><td>Natural gas and oil</td><td class="num">73,947</td><td class="num">5,246</td><td class="num">11,526</td><td class="num">80,227</td><td class="num">91,542</td></tr>
+      <tr><td>Hydro and pumped hydro</td><td class="num">54,984</td><td class="num">597</td><td class="num">673</td><td class="num">55,061</td><td class="num">53,974</td></tr>
+      <tr><td>Solar</td><td class="num">25,665</td><td class="num">9,481</td><td class="num">18,343</td><td class="num">34,527</td><td class="num">34,684</td></tr>
+      <tr><td>Wind</td><td class="num">29,504</td><td class="num">9,142</td><td class="num">9,215</td><td class="num">29,577</td><td class="num">29,721</td></tr>
+      <tr><td>Coal</td><td class="num">23,994</td><td class="num">1,371</td><td class="num">124</td><td class="num">22,747</td><td class="num">23,844</td></tr>
+      <tr><td>Battery</td><td class="num">600</td><td class="num">409</td><td class="num">9,815</td><td class="num">10,006</td><td class="num">10,016</td></tr>
+      <tr><td>All fuels</td><td class="num">221,862</td><td class="num">27,361</td><td class="num">51,017</td><td class="num">245,517</td><td class="num">257,276</td></tr>
+    </tbody>
+  </table></div>
+  <div class="col">
+    <p>Thermal capacity sits below nameplate because the model's capacities are net; added units are divided by the nameplate-to-net ratio measured on plants both sources hold. Batteries get four hours, since eGRID reports power only. A new plant goes to the region its balancing authority runs; tested on plants with a known region the rule is right for 98.8% of capacity.</p>
+  </div>
+  <h3>Emission factors</h3>
+  <div class="col">
+    <p>Each plant's CO2 rate is read from the raw eGRID 2023 plant file by plant code. Coal, gas and oil plants with no usable rate take heat rate times EIA carbon content. As dispatched, coal emits 1,061 kg/MWh and gas 454. Four other factor sets are computed beside this one, and the range across them is saved with every result.</p>
+  </div>
+  <h3>Renewable portfolio standards</h3>
+  <div class="col">
+    <p>GOOD's policy file writes each state standard as a share of in-state generation with no shortfall allowed. That form suits capacity planning. With nothing allowed to be built it becomes a cap on in-state gas and coal: on the older fleet California's non-renewable output was the same 10,629 GWh in every scenario. Two alternatives have been run, and neither is yet the default.</p>
+    <ul>
+      <li><b>Published form with a shortfall price of $50/MWh</b>, the CPUC penalty. The model can now break the cap by paying.</li>
+      <li><b>On load served</b>, which is what the ratios mean in their source. In as-built dispatch nothing the solver controls changes compliance, so the standard is reported and does not constrain the solve.</li>
+    </ul>
+    <p>Runs on the 2023 fleet use the 2023 ratios (California 39.3%, against 44.8% for 2025).</p>
+  </div>
+</section>
+
+<section id="scenarios">
+  <h2>Scenarios run</h2>
+  <div class="tw"><table class="text">
+    <thead><tr><th>Scenario</th><th>What changes from S1</th><th>Size</th></tr></thead>
+    <tbody>
+      <tr><td><span class="scen">S0</span></td><td class="wrap1">EV charging load removed. The baseline for the EV increment.</td><td class="wrap1">–</td></tr>
+      <tr><td><span class="scen">S1</span></td><td class="wrap1">EV load on the grid as built. The reference.</td><td class="wrap1">–</td></tr>
+      <tr><td><span class="scen">S2</span></td><td class="wrap1">A 4-hour battery on every substation with EV load, at half its EV peak and at least 1 MW.</td><td class="wrap1">1,564 sites, 2,311 MW, 9,243 MWh</td></tr>
+      <tr><td><span class="scen">S2_shift_node</span></td><td class="wrap1">Storage on each substation short of load, at twice its need. Need is its peak hourly shortfall and its largest single-day shortfall in S1.</td><td class="wrap1">129 sites, 2,515 MW, 22,029 MWh</td></tr>
+      <tr><td><span class="scen">S2_shift_pocket</span></td><td class="wrap1">The same total. Where a short substation has neighbours on the load side of the binding limit, half its storage moves onto them (102 neighbours).</td><td class="wrap1">231 sites, 2,515 MW, 22,029 MWh</td></tr>
+      <tr><td><span class="scen">S2_curtail</span></td><td class="wrap1">A 4-hour battery on each substation that spills wind or solar, at its peak spill.</td><td class="wrap1">29 sites, 4,120 MW, 16,479 MWh</td></tr>
+      <tr><td><span class="scen">S3</span></td><td class="wrap1">Every corridor and gateway rating in the nested network times ten.</td><td class="wrap1">–</td></tr>
+      <tr><td><span class="scen">S4</span></td><td class="wrap1">S3 with transformer ratings times ten as well.</td><td class="wrap1">–</td></tr>
+    </tbody>
+  </table></div>
+  <div class="col">
+    <p>The two shortfall fleets are identical in size and differ only in location, which isolates whether siting inside a congested pocket matters. They are sized as an upper bound on what storage can do, not as a design. Storage sizes are those of the 2023-fleet run; each run sizes its fleets from its own S1.</p>
+    <p>The eight scenarios have been solved in five configurations, each in its own results folder.</p>
+  </div>
+  <div class="tw"><table class="text">
+    <thead><tr><th>Fleet</th><th>Renewable standard</th><th>Folder suffix</th><th>Scenarios</th></tr></thead>
+    <tbody>
+      <tr><td>IPM v6.17</td><td class="wrap1">Published form, hard limit, 2025 ratios</td><td><code>.rps_hard</code></td><td class="wrap1">7, without S2</td></tr>
+      <tr><td>IPM v6.17</td><td class="wrap1">Published form, $50/MWh, 2025 ratios</td><td>none</td><td class="wrap1">8</td></tr>
+      <tr><td>IPM v6.17</td><td class="wrap1">On load served, 2025 ratios</td><td><code>.rps_load</code></td><td class="wrap1">8</td></tr>
+      <tr><td>2023</td><td class="wrap1">On load served, 2023 ratios</td><td><code>.fleet2023.rps_load</code></td><td class="wrap1">8</td></tr>
+      <tr><td>2023</td><td class="wrap1">Published form, $50/MWh, 2023 ratios</td><td><code>.fleet2023</code></td><td class="wrap1">8</td></tr>
+    </tbody>
+  </table></div>
+  <div class="col">
+    <p>Earlier configurations are on disk and superseded: PG&amp;E alone, PG&amp;E with SCE, all six California areas, single weeks, and a two-stage solve with investment open.</p>
+  </div>
+</section>
+
+<section id="results">
+  <h2>Results</h2>
+  <div class="col"><p>Maps and the first table are from the 2023 fleet with the standard on load served. The second table is the same fleet with the published form at $50/MWh.</p></div>
+
+  <h3>Where load goes unserved, and which corridors bind</h3>
+  <figure>
+    <div class="plate"><img src="{{fig:05_congestion_S1}}" alt="Map of California with corridors coloured by the hours they sit at their rating in S1 and red circles for unserved load, with detail panels for San Diego and the Los Angeles basin."></div>
+    <figcaption><b>S1.</b> 301 of 3,778 corridors sit at their rating for a day or more of the 672 hours, and 10 for all of them. Unserved load is 46.9 GWh in SDG&amp;E, 23.1 in SCE and 16.0 in PG&amp;E.</figcaption>
+  </figure>
+  {{frag:unserved_bars}}
+  <div class="col">
+    <p>Unserved load in GWh. Storage on the unserved load removes 49% of it. Corridor relief removes 62%, and the rest goes only when transformers are relaxed too, so every unserved MWh in S1 is attributable to one limit or the other. Storage on every EV substation removes 7%, because most of it sits where nothing is short. Storage on the spill removes none: no substation has both spill and unserved load.</p>
+  </div>
+  <figure>
+    <div class="plate"><img src="{{fig:08_unserved_by_scenario}}" alt="Three maps of California showing unserved load by substation in S1, with storage on the unserved load, and with corridors times ten."></div>
+    <figcaption><b>What each intervention leaves.</b> Storage clears the Los Angeles and Fresno pockets and most of the San Diego ones. What survives both interventions is a handful of substations in San Diego and one north of Sacramento.</figcaption>
+  </figure>
+  <div class="col">
+    <p><b>The transformer-bound remainder is a data conflict.</b> 32.8 of the 32.9 GWh left in S3 is at 44 substations whose published or ICA rating is below their peak load. Wabash in San Diego carries more than half of it: a published 16.9 MW against 72 MW of allocated load, short in all 672 hours. SDG&amp;E publishes no substation load to settle which number is wrong. This quantity should be reported as a conflict between two data sources and kept out of the congestion estimate.</p>
+  </div>
+  {{frag:residual_table}}
+
+  <h3>Where the storage sits</h3>
+  <figure>
+    <div class="plate"><img src="{{fig:07_storage_fleets}}" alt="Three maps of California showing the storage fleet in S2, S2_shift_pocket and S2_curtail by substation and size."></div>
+    <figcaption><b>Three fleets.</b> The default follows EV load and so follows population. The fleet sized on unserved load concentrates in San Diego and the western Los Angeles basin. The fleet sized on spill sits in Tehachapi, the Mojave and the San Joaquin Valley, far from any unserved load. Bubble scales differ between panels.</figcaption>
+  </figure>
+
+  <h3>Where wind and solar are spilled</h3>
+  <figure>
+    <div class="plate"><img src="{{fig:06_spill_S1}}" alt="Map of California with amber circles for wind and solar spilled in S1, outlined where attached plants exceed the lines leaving the substation, with detail panels for Tehachapi and Mojave and the southern San Joaquin Valley."></div>
+    <figcaption><b>S1.</b> 573 GWh in four weeks, 542 of it at substations. With corridors times ten the substation spill is zero, so none of it is a system-wide surplus. A dark outline marks a substation whose attached plants exceed the lines that leave it.</figcaption>
+  </figure>
+  <div class="col">
+    <p>Scaled to a year the spill is about 7.5 TWh, against roughly 2.6 TWh the California ISO curtailed in 2023 (<a href="https://www.eia.gov/todayinenergy/detail.php?id=65364">EIA</a>). 225 GWh of it is at 32 substations where the plants attached exceed the outgoing lines by 9.1 GW in total. Most are solar and storage plants built after the substation data was compiled, whose own collector stations are missing from it, so they landed on the nearest small substation. Hinkley alone spills 86 GWh: 536 MW of solar behind 60 MW of line. The other 317 GWh is behind a limit further along and has not been separated into real congestion and the same fault one step removed.</p>
+  </div>
+
+  <h3>Emissions</h3>
+  <div class="col"><p>Against S1, positive means less CO2. kt over four weeks, eGRID 2023 plant rates. <b>Standard on load served</b>; the model serves each added MWh of EV load at {{frag:results_load_rate}} kg.</p></div>
+  {{frag:results_load}}
+  <div class="col"><p><b>Published form at $50/MWh</b>; each added MWh of EV load at {{frag:results_gen_rate}} kg.</p></div>
+  {{frag:results_gen}}
+  <div class="col">
+    <ul>
+      <li><b>Corridors.</b> The saving comes from releasing spilled wind and solar, which outweighs the emissions of the extra 53 GWh served. It is larger in the published form because each released MWh there displaces coal. Since at least 41% of the substation spill comes from plant attachment, both figures are overstated by an amount the next run will settle.</li>
+      <li><b>Storage on the unserved load.</b> It serves 42 GWh more and emits for it. Charged in full it adds CO2; credited at the model's own rate for added load it is close to neutral. Which convention the paper uses is a decision still to make.</li>
+      <li><b>Storage on the spill.</b> It serves no extra load and recovers 337 GWh of spill in the first table and 361 in the second. The figure carries the same attachment caveat as the corridor figure.</li>
+    </ul>
+  </div>
+  <h3>The same quantities across fleets and standards</h3>
+  {{frag:sensitivity_table}}
+  <div class="col">
+    <p>Read across a row. Unserved load and its relief are stable. The CO2 figures are not: the rate on EV load runs from under 500 to over 750 kg/MWh depending on whether the standard holds California's gas out of dispatch, and the corridor figure nearly doubles with the 2023 fleet because the spill does.</p>
+  </div>
+
+  <h3>Does the model run plants the way they ran?</h3>
+  <div class="col"><p>The no-EV scenario scaled to a year, against what eGRID 2023 reports. The small figure is modelled over actual.</p></div>
+  {{frag:dispatch_table}}
+  <div class="col">
+    <p>The fleet update put wind within 4% of actual and solar within 12% under either standard. The two standards then pull thermal dispatch in opposite directions, and neither reproduces 2023.</p>
+    <ul>
+      <li><b>On load served</b>, coal is 5% high and gas 29% low across the West. California burns 29% more gas than it did and exports 5% of its load, where it imports at least 17%.</li>
+      <li><b>In the published form at $50/MWh</b>, the standard binds harder on the 2023 fleet, which has a quarter of the California wind the IPM fleet had. California's gas falls to 60% of actual and the state imports 19% of its load, which matches. The imports are coal: 32% above actual across the West.</li>
+    </ul>
+    <p>Three things bias both. Hydro runs 33 TWh a year above its 2023 output and displaces gas. The model has no California carbon price. And the duplicated plants add 6 to 7 TWh a year of California gas, while 8.8 TWh of IPM's import is counted as California generation.</p>
+  </div>
+</section>
+
+<section id="fixed">
+  <h2>Faults found and fixed</h2>
+  <div class="col"><p>Each was found by a result that did not make physical sense, traced to a cause, and fixed there. No output has been clipped or calibrated.</p></div>
+  <div class="tw"><table class="text">
+    <thead><tr><th>Fault</th><th>What it did</th><th>Fix</th></tr></thead>
+    <tbody>
+      <tr><td class="wrap1">Radial feeds sized to load, 5 MW minimum</td><td class="wrap1">A generation switchyard serves no load, so each got 5 MW. Four nodes spilled 647 GWh, 65% of all substation spill.</td><td class="wrap1">Feed sized to the larger of peak load and attached generation. 7.9 GW freed.</td></tr>
+      <tr><td class="wrap1">Wind and solar missed by a class filter</td><td class="wrap1">GOOD 1.x files wind and solar as loads. A filter on producers dropped all 1,041 California records.</td><td class="wrap1">One shared test for what injects at a substation.</td></tr>
+      <tr><td class="wrap1">Plants snapped to the nearest substation regardless of voltage</td><td class="wrap1">1,681 MW of Tehachapi wind sat in a 66 kV pocket with 160 MW of egress.</td><td class="wrap1">Within 1 km the plant is at its own yard; beyond that it goes to a substation that can collect it. 30 sites, 4,818 MW moved.</td></tr>
+      <tr><td class="wrap1">Islands made by restricting to three utilities</td><td class="wrap1">26 components lost their corridors into BANC and LADWP and got 5 MW gateways. 16 substations were short in every hour, 63 GWh of S1's unserved load.</td><td class="wrap1">The severed corridors are kept and re-terminated on the neighbouring area's bus: 28 arcs, 2,009 MW.</td></tr>
+      <tr><td class="wrap1">Network build not reproducible</td><td class="wrap1">Sets of substation names were iterated in an order that changes between Python processes. 16 corridors moved between builds, and gateway rows changed order.</td><td class="wrap1">Sorted iteration. Three consecutive builds are byte-identical.</td></tr>
+      <tr><td class="wrap1">Emission rates lost in parsing</td><td class="wrap1">eGRID 2023 writes thousands separators. Every plant at 1,000 lb/MWh or more lost its rate, so coal came out at 87 kg/MWh.</td><td class="wrap1">Rates read from the raw file. Coal 1,061, gas 454 kg/MWh as dispatched.</td></tr>
+      <tr><td class="wrap1">Renewable standard acting as a cap on gas</td><td class="wrap1">California's gas could not respond to anything, so every added MWh came from out-of-state coal.</td><td class="wrap1">Shortfall price, and the load-served form, as options.</td></tr>
+      <tr><td class="wrap1">A fleet that never existed</td><td class="wrap1">22 GW of projected plants and wind at twice its real output. California: 58 TWh of wind against 14, a net exporter.</td><td class="wrap1">2023 fleet from eGRID. California wind 14.1 TWh, solar 40.3 against 40.6.</td></tr>
+      <tr><td class="wrap1">Storage scenario run with the wrong fleet</td><td class="wrap1">A missing argument made S2 fall back to the default fleet; a result was reported for the wrong one and withdrawn.</td><td class="wrap1">Each fleet has its own scenario name and its file is saved with the results.</td></tr>
+      <tr><td class="wrap1">Stale result tables</td><td class="wrap1">A scenario with no unserved load left the previous run's table in place.</td><td class="wrap1">Tables are always written.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="col">
+    <p>Earlier corrections, all in the current results: county base load shifted 7 to 8 hours by an unlabelled UTC axis (correlation with PG&amp;E's measured profiles rose from 0.44 to 0.80); base load allocated where a utility publishes it; feeder assignment unmasked by territory, which put SCE's peak at 36.7 GW; aggregate links between California areas left in beside the substation network, which bypassed every corridor; gateways sized from total incident capacity, 372 GW against a 63 GW peak; substations assigned to utilities by a vote of nearby travel zones, wrong for 66% of PG&amp;E's.</p>
+  </div>
+</section>
+
+<section id="open">
+  <h2>Known and not yet fixed</h2>
+  <div class="notes">
+    <div class="note stop">
+      <div class="tag">Plants counted twice</div>
+      <p>156 plants, 3,285 MW (1,920 MW of gas, 694 of solar, 446 of oil), are filed under LADWP or BANC but sit nearest a substation of a nested utility. The nesting step attaches them to that substation and also leaves them on their own area's bus. In S1 the two copies generate 874 and 719 GWh, so about 1.2% of all generation comes from a second copy of capacity that exists once. It is in all five configurations, at about the same size.</p>
+      <p>Fix: keep one copy. A plant filed under an area that is not nested stays on that area's bus. A small change, then every scenario solved again.</p>
+    </div>
+    <div class="note warn">
+      <div class="tag">Plants with no substation that can collect them</div>
+      <p>64 plant sites, 17.3 GW, have no adequately rated substation within 15 km. At 32 substations attached capacity exceeds the outgoing lines by 9.1 GW. This produces at least 225 GWh of the spill and inflates the corridor and curtailment-storage emission figures.</p>
+      <p>Proposed: give each such plant a tie line of its own nameplate to the nearest substation that can collect it, since no plant is built without one.</p>
+    </div>
+    <div class="note warn">
+      <div class="tag">Dispatch away from 2023</div>
+      <p>With the standard on load served, California burns 29% more gas than in 2023 and exports. In the published form it burns 40% less and the West burns 32% more coal. Hydro is 22% high in both. Causes identified so far: hydro at a long-run average, no California carbon price, the duplicated plants, and an import asset counted as in-state generation.</p>
+    </div>
+    <div class="note warn">
+      <div class="tag">Plants in the wrong region</div>
+      <p>IPM drew its regions on a map. It files 120 existing plants, 9,189 MW, outside their balancing authority's regions, 73 of them California ISO plants under LADWP. New plants are placed correctly; these were left where they are.</p>
+    </div>
+    <div class="note warn">
+      <div class="tag">EV adoption level not recorded</div>
+      <p>The charging input adds about 17 TWh a year in the three utilities, several times today's EV load. The year or fleet size it represents is not carried through the pipeline and has to be stated in the paper.</p>
+    </div>
+  </div>
+</section>
+
+<section id="limits">
+  <h2>Limitations</h2>
+  <div class="tw"><table class="text">
+    <thead><tr><th>Limitation</th><th>Effect on results</th></tr></thead>
+    <tbody>
+      <tr><td class="wrap1">Transport model, not DC power flow</td><td class="wrap1">No loop flow. Transfers that Kirchhoff's voltage law would forbid are allowed, so congestion is a lower bound.</td></tr>
+      <tr><td class="wrap1">Corridor ratings from a voltage lookup</td><td class="wrap1">Corridor congestion rests on typical ratings, not the lines' own. Every 230 kV circuit is taken as 400 MVA.</td></tr>
+      <tr><td class="wrap1">Half the corridors inferred from geometry</td><td class="wrap1">Below 100 kV the topology has no independent check, and almost two thirds of corridors are below 100 kV.</td></tr>
+      <tr><td class="wrap1">SDG&amp;E load is allocated</td><td class="wrap1">San Diego carries 55% of S1's unserved load and has no measured substation load. Its largest single item is a rating conflict.</td></tr>
+      <tr><td class="wrap1">LADWP, BANC and IID as single buses</td><td class="wrap1">No congestion is visible inside them, and flows through them are unconstrained.</td></tr>
+      <tr><td class="wrap1">Four weeks, not a year</td><td class="wrap1">Annual figures are the four weeks times 13. Seasonal extremes outside the sampled weeks are missed.</td></tr>
+      <tr><td class="wrap1">Grid as built, one EV level</td><td class="wrap1">Results describe one adoption level on one fleet. They are not a forecast and say nothing about how the gap grows.</td></tr>
+      <tr><td class="wrap1">Storage sized as an upper bound</td><td class="wrap1">The shortfall fleets are twice the measured need. They show what storage can reach, not what it costs to reach it.</td></tr>
+      <tr><td class="wrap1">Storage durations assumed</td><td class="wrap1">Four hours for every existing battery and ten for pumped hydro, from GOOD's defaults.</td></tr>
+      <tr><td class="wrap1">No unit commitment or reserves</td><td class="wrap1">Plants ramp freely and nothing is held back, so thermal dispatch is more flexible than in operation.</td></tr>
+      <tr><td class="wrap1">CO2 only, plant-average rates</td><td class="wrap1">Methane and nitrous oxide are not counted. A plant rate averages its units; 5% of fossil energy is on units whose plant rate is far from their own heat rate.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="next">
+  <h2>Decisions and next steps</h2>
+  <h3>Decisions that are yours</h3>
+  <div class="col">
+    <ul>
+      <li><b>Tie lines for plants with no adequate substation.</b> Recommended. It changes spill and both emission figures that depend on it.</li>
+      <li><b>Which form of the renewable standard is the default.</b> The load-served form matches what the ratios mean and leaves California's gas free to respond. The published form with a price is closer to GOOD as distributed.</li>
+      <li><b>Which CO2 convention the paper reports for storage.</b> All four are saved, so this needs no new run.</li>
+      <li><b>Whether to move the 120 plants IPM files outside their balancing authority.</b></li>
+    </ul>
+  </div>
+  <h3>Next run</h3>
+  <div class="col">
+    <p>Fix the double-counted plants, add tie lines if approved, rebuild the network and solve all eight scenarios again. About 90 minutes per configuration.</p>
+  </div>
+  <h3>Improvements, roughly in order of value</h3>
+  <div class="col">
+    <ul>
+      <li><b>EV adoption levels.</b> Run the scenarios at several adoption years. The question is how the gap between storage and transmission moves as EV load grows, and one level cannot show that.</li>
+      <li><b>A source for line ratings.</b> Utility transmission plans or interconnection studies for the corridors that bind most. 301 corridors account for the congestion; rating those is a bounded task.</li>
+      <li><b>SDG&amp;E data.</b> Wire in the downloaded ICA fully and send the drafted request for substation load. It would settle the Wabash conflict and half the remaining unserved load.</li>
+      <li><b>Cost.</b> Levelised cost per MWh relieved and per tonne for storage and for corridor upgrades, on the current runs. The earlier cost comparison predates most of the fixes above.</li>
+      <li><b>Storage sized to cost, not to need.</b> A supply curve: relief against MW installed, to find where storage stops being worth it.</li>
+      <li><b>Dispatch realism.</b> Hydro at 2023 output, a California carbon price, and the import asset treated as an import.</li>
+      <li><b>A full year.</b> The annual horizon instead of four weeks, once the configuration is settled.</li>
+      <li><b>DC power flow.</b> Angle-based flow on the corridors above 100 kV, where terminals are documented.</li>
+      <li><b>SCE sub-transmission from its circuit inventory</b>, so those corridors are asserted and not inferred.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="repro">
+  <h2>Reproduce</h2>
+  <div class="tw"><table class="text">
+    <thead><tr><th>Step</th><th>Script</th><th>Writes</th></tr></thead>
+    <tbody>
+      <tr><td>Base and EV load</td><td class="wrap1"><code>08_00</code> to <code>08_03</code></td><td class="wrap1">Hourly load by substation</td></tr>
+      <tr><td>Ratings and topology sources</td><td class="wrap1"><code>08_04</code> to <code>08_12</code>, <code>08_16</code>, <code>08_17</code></td><td class="wrap1">Transformer ratings, asserted corridors</td></tr>
+      <tr><td>Fleet</td><td class="wrap1"><code>08_19_build_fleet_from_egrid2023.py</code></td><td class="wrap1"><code>Examples/WEC_egrid2023.json</code></td></tr>
+      <tr><td>Network</td><td class="wrap1"><code>09_01_build_ca_meso_grid.py</code></td><td class="wrap1"><code>data/meso/ca_substation_network.json</code></td></tr>
+      <tr><td>Scenarios</td><td class="wrap1"><code>10_01_run_scenarios_S0_S3.py</code></td><td class="wrap1">One folder per scenario under <code>astr_meso_results/</code></td></tr>
+      <tr><td>Storage fleets</td><td class="wrap1"><code>08_14</code> on spill, <code>08_18</code> on unserved load, both from S1</td><td class="wrap1">Fleet files, copied beside the results</td></tr>
+      <tr><td>Emissions</td><td class="wrap1"><code>10_11_emission_accounting.py</code></td><td class="wrap1">Four comparisons under five factor sets</td></tr>
+      <tr><td>Dispatch check</td><td class="wrap1"><code>10_12_dispatch_check.py</code></td><td class="wrap1">Modelled against eGRID 2023 by state and fuel</td></tr>
+      <tr><td>This page</td><td class="wrap1"><code>10_13_summary_figures.py</code>, then with <code>--assemble</code></td><td class="wrap1">Figures in <code>docs/figures/summary/</code>, this file</td></tr>
+    </tbody>
+  </table></div>
+  <div class="formula">python 10_01_run_scenarios_S0_S3.py --horizon four_week \
+    --only-ba WECC_SCE WEC_CALN WEC_SDGE --no-capex --crossover -1 \
+    --rps-year 2023 --rps-basis load --tag-suffix .fleet2023.rps_load --scenarios S1</div>
+  <div class="col"><p>The full record of each fault, with the evidence, is in <code>docs/model_specification.md</code>, section 0.8.</p></div>
+</section>
+
+<footer>
+  ASTR2026 transmission layer · Jiewei Grant Li, UC Davis · figures and tables generated from the result files by <span class="m">10_13_summary_figures.py</span>
+</footer>
+
+</div>

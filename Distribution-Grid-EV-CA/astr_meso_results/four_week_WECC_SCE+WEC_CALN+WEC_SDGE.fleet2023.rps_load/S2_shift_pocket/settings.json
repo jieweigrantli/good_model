@@ -1,0 +1,10 @@
+{
+  "no_capex": true,
+  "rps_noncompliance_cost_per_MWh": 50.0,
+  "rps_basis": "load",
+  "rps_year": 2023,
+  "fleet": "egrid2023",
+  "bess_csv": "data\\meso\\bess_shift_pocket.csv",
+  "line_csv": null,
+  "out_suffix": "shift_pocket"
+}
