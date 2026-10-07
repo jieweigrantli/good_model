@@ -851,62 +851,115 @@ def _small(leg):
 
 
 def fig_brief_unserved(D: Data):
-    """Page-width map for the brief: the state, and the south where most of it is."""
+    """Map for page 1 of the brief: the state, and the south where most of it is.
+
+    Drawn at the width it is printed at, so its labels keep their size.
+    """
     with plt.rc_context(BRIEF_RC):
         x0, y0 = T.transform(BRIEF_BOX[0], BRIEF_BOX[2])
         x1, y1 = T.transform(BRIEF_BOX[1], BRIEF_BOX[3])
         ext = (x0, x1, y0, y1)
         b = D.outline.total_bounds
         a_main, a_zoom = (b[2] - b[0]) / (b[3] - b[1]), (x1 - x0) / (y1 - y0)
-        width = 7.4
+        width = 5.7
         height = width / (a_main + a_zoom) * 0.985
         fig, (main, zoom) = plt.subplots(1, 2, figsize=(width, height + 0.22),
                                          gridspec_kw={"width_ratios": [a_main, a_zoom], "wspace": 0.02})
-        fig.subplots_adjust(left=0.005, right=0.995, top=0.94, bottom=0.01)
+        fig.subplots_adjust(left=0.005, right=0.995, top=0.93, bottom=0.01)
         bind = corridor_binding(D, "S1")
         hot = bind[bind["binding"] >= 24].sort_values("binding")
         s = D.scen("S1", "shortfall_by_node.csv")
         s = s[s["node"].isin(D.xy) & (s["shortfall_GWh"] > 1e-6)]
         cmap = plt.get_cmap("YlOrRd")
-        k = 17
+        k = 10
         canvas(main, D, title="California")
         canvas(zoom, D, extent=ext, title="Los Angeles basin to the border")
         for ax, scale in ((main, 1.0), (zoom, 2.1)):
-            lines(ax, D, D.edges[D.edges["in_scope"]], EDGE, 0.3 * scale ** 0.5, z=1)
+            lines(ax, D, D.edges[D.edges["in_scope"]], EDGE, 0.25 * scale ** 0.5, z=1)
             if len(hot):
                 ax.add_collection(LineCollection(segs(D, hot), colors=cmap(0.35 + 0.65 * np.clip(hot["binding"] / 672, 0, 1)),
-                                                 linewidths=(0.6 + 1.3 * hot["binding"] / 672) * scale ** 0.6, zorder=5, capstyle="round"))
+                                                 linewidths=(0.5 + 1.1 * hot["binding"] / 672) * scale ** 0.6, zorder=5, capstyle="round"))
             bubbles(ax, [D.xy[n][0] for n in s["node"]], [D.xy[n][1] for n in s["node"]], s["shortfall_GWh"].to_numpy(),
                     k * scale, RED, alpha=0.7, lw=0.4)
         main.add_patch(Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False, edgecolor=INK, linewidth=0.7, zorder=18))
-        hs = [Line2D([], [], color=cmap(0.35 + 0.65 * v / 672), lw=0.9 + 1.6 * v / 672, label=f"{v} h") for v in (24, 168, 672)]
+        hs = [Line2D([], [], color=cmap(0.35 + 0.65 * v / 672), lw=0.8 + 1.4 * v / 672, label=f"{v} h") for v in (24, 168, 672)]
         l1 = main.legend(handles=hs, loc="upper right", title="Corridor at its rating,\nhours of 672", borderpad=0.3)
         l1._legend_box.align = "left"
         main.add_artist(l1)
         _small(bubble_legend(main, [1, 5, 15], k, RED, "GWh", loc="lower left", title="Unserved load"))
-        return save(fig, "A_brief_unserved_S1", dpi=220)
+        return save(fig, "A_brief_unserved_S1", dpi=240)
 
 
 def fig_brief_remaining(D: Data):
-    with plt.rc_context(BRIEF_RC):
-        panels = [("S1", "EV load, grid as built"),
-                  ("S2_shift_pocket", "With storage on the unserved load"),
-                  ("S3", "With corridors ×10")]
+    """Map for page 2 of the brief, one text column wide: what storage and corridors leave."""
+    with plt.rc_context({**BRIEF_RC, "axes.titlesize": 7.2}):
+        panels = [("S2_shift_pocket", "Storage on the unserved load"), ("S3", "Corridors ×10")]
         b = D.outline.total_bounds
         a_main = (b[2] - b[0]) / (b[3] - b[1])
-        width = 7.4
-        fig, axes = plt.subplots(1, 3, figsize=(width, width / 3 / a_main * 0.9 + 0.3), gridspec_kw={"wspace": 0.0})
-        fig.subplots_adjust(left=0.005, right=0.995, top=0.9, bottom=0.01)
-        k = 13
+        width = 3.3
+        fig, axes = plt.subplots(1, 2, figsize=(width, width / 2 / a_main * 0.92 + 0.3), gridspec_kw={"wspace": 0.0})
+        fig.subplots_adjust(left=0.005, right=0.995, top=0.87, bottom=0.01)
+        k = 5.5
         for ax, (sc, title) in zip(axes, panels):
             s = D.scen(sc, "shortfall_by_node.csv")
             s = s[s["node"].isin(D.xy) & (s["shortfall_GWh"] > 1e-6)]
-            canvas(ax, D, cities=False, territories=False, title=f"{title}\n{s['shortfall_GWh'].sum():.1f} GWh unserved")
-            lines(ax, D, D.edges[D.edges["in_scope"]], EDGE, 0.3, z=1, alpha=0.6)
+            canvas(ax, D, cities=False, territories=False, title=f"{title}\n{s['shortfall_GWh'].sum():.1f} GWh left")
+            lines(ax, D, D.edges[D.edges["in_scope"]], EDGE, 0.22, z=1, alpha=0.6)
             bubbles(ax, [D.xy[n][0] for n in s["node"]], [D.xy[n][1] for n in s["node"]], s["shortfall_GWh"].to_numpy(), k, RED,
-                    alpha=0.72, lw=0.4)
-        _small(bubble_legend(axes[0], [1, 5, 15], k, RED, "GWh", loc="lower left"))
-        return save(fig, "B_brief_what_is_left", dpi=220)
+                    alpha=0.72, lw=0.3)
+        leg = _small(bubble_legend(axes[1], [1, 5, 15], k, RED, "GWh", loc="upper right"))
+        for txt in leg.get_texts():
+            txt.set_fontsize(6.0)
+        return save(fig, "B_brief_what_is_left", dpi=260)
+
+
+def binding_by_hour(run: Path) -> pd.DataFrame:
+    """In S1's short hours, what is at its limit: the transformer, the substation's own
+    lines, or a line further upstream. Read from the saved solution and cached beside it.
+    """
+    cache, sol_path = run / "S1" / "binding_by_hour.csv", run / "S1" / "solution.json"
+    if cache.is_file() and (not sol_path.is_file() or cache.stat().st_mtime >= sol_path.stat().st_mtime):
+        return pd.read_csv(cache)
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("nest", PKG / "09_02_nest_meso_in_good.py")
+    nest = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(nest)
+    rating = {h: w / 1e6 for h, w in nest._load_transformer_ratings().items()}
+    with open(sol_path, encoding="utf-8") as fh:
+        sol = json.load(fh)
+    caps = pd.read_csv(run / "S1" / "line_flows_summary.csv").set_index("line")["capacity_MW"].to_dict()
+    H, tol = None, 0.99                      # the binding test 10_01 uses for lines
+    inbound, outbound = {}, {}
+    for e in sol["edges"]:
+        for handle, ln in (e.get("lines") or {}).items():
+            f = np.asarray(ln.get("flow") or [], dtype=float)
+            r = np.asarray(ln.get("received") or f, dtype=float)
+            if not f.size:
+                continue
+            H = f.size
+            inbound.setdefault(e["target"], []).append((r, f, float(caps.get(handle, 0.0))))
+            outbound.setdefault(e["source"], []).append(f)
+    rows = []
+    for n, d in sol["nodes"].items():
+        s = np.asarray(d.get("shortfall") or [], dtype=float)
+        if not n.startswith("SUB_") or s.size != H or s.sum() <= 1e-6:
+            continue
+        net_import = np.zeros(H)
+        for r, _, _ in inbound.get(n, []):
+            net_import += r
+        for f in outbound.get(n, []):
+            net_import -= f
+        t = rating.get(n, np.inf)
+        rated = [(f, c) for _, f, c in inbound.get(n, []) if c > 0]
+        own = np.all([f >= tol * c for f, c in rated], axis=0) if rated else np.zeros(H, bool)
+        trf = np.isfinite(t) & (net_import >= tol * t)
+        is_short = s > 1e-6
+        for label, m in (("transformer", is_short & trf), ("own lines", is_short & ~trf & own), ("upstream", is_short & ~trf & ~own)):
+            rows.append({"node": n, "binds": label, "GWh": float(s[m].sum()) / 1e3, "hours": int(m.sum())})
+    out = pd.DataFrame(rows)
+    out.to_csv(cache, index=False)
+    return out
 
 
 def brief_numbers(D: Data, nums: dict) -> dict[str, str]:
@@ -923,11 +976,21 @@ def brief_numbers(D: Data, nums: dict) -> dict[str, str]:
     def pct(s):
         return f"{(s1 - left(s)) / s1 * 100:.0f}%"
 
-    n["substations"] = f"{nums['network']['substations_nested']:,}"
-    n["corridors"] = f"{nums['network']['corridors_in_scope']:,}"
+    net = nums["network"]
+    n["substations"] = f"{net['substations_nested']:,}"
+    n["corridors"] = f"{net['corridors_in_scope']:,}"
+    prov = net["provenance_in_scope"]
+    n["inferred_pct"] = f"{prov.get('inferred', 0) / net['corridors_in_scope'] * 100:.0f}%"
+    n["synthetic_feeds"] = f"{prov.get('synthetic_feed', 0):,}"
+    rs = net["rating_source_nested"]
+    measured = rs.get("ica", 0) + rs.get("published", 0)
+    n["rated_pct"] = f"{measured / sum(rs.values()) * 100:.0f}%"
+    n["derived_pct"] = f"{(1 - measured / sum(rs.values())) * 100:.0f}%"
+
     n["s0"] = f"{left('S0'):.1f}"
     n["s1"] = f"{s1:.1f}"
     n["ev_adds"] = f"{s1 - left('S0'):.1f}"
+    n["ev_pct"] = f"{(s1 - left('S0')) / s1 * 100:.0f}%"
     n["s0_share"] = f"{left('S0') / s1 * 100:.0f}%"
     for key, s in (("s2", "S2"), ("pocket", "S2_shift_pocket"), ("node", "S2_shift_node"), ("s3", "S3"), ("s4", "S4"), ("curtail", "S2_curtail")):
         n[f"{key}_left"] = f"{left(s):.1f}"
@@ -945,6 +1008,29 @@ def brief_numbers(D: Data, nums: dict) -> dict[str, str]:
     n["sdge_gwh"], n["sce_gwh"], n["pge_gwh"] = (f"{u[k][1]:.1f}" for k in ("SDG&E", "SCE", "PG&E"))
     n["south_share"] = f"{(u['SDG&E'][1] + u['SCE'][1]) / s1 * 100:.0f}%"
     n["binding"] = f"{nums['congestion']['binding_corridors_ge_24h']:,}"
+
+    # Which limit the unserved load sits behind. A substation still short when
+    # corridors are relaxed (S3) is transformer-limited; one that S3 serves in full
+    # is corridor-limited. Every scenario's unserved load then splits by location.
+    node = {s: D.scen(s, "shortfall_by_node.csv").set_index("node")["shortfall_GWh"]
+            for s in ("S0", "S1", "S2", "S2_shift_pocket", "S3", "S4")}
+    trf = set(node["S3"].index[node["S3"] > 1e-6])
+    cor = set(node["S1"].index[node["S1"] > 1e-6]) - trf
+    n["n_trf"], n["n_cor"] = f"{len(trf)}", f"{len(cor)}"
+    for key, s in (("s0", "S0"), ("s1", "S1"), ("s2", "S2"), ("pocket", "S2_shift_pocket"), ("s3", "S3"), ("s4", "S4")):
+        d = node[s]
+        n[f"{key}_cor"] = f"{d[d.index.isin(cor)].sum():.1f}"
+        n[f"{key}_trf"] = f"{d[d.index.isin(trf)].sum():.1f}"
+
+    def share_removed(s, group):
+        a, z = node["S1"], node[s]
+        return f"{(1 - z[z.index.isin(group)].sum() / a[a.index.isin(group)].sum()) * 100:.0f}%"
+
+    n["pocket_cor_removed"], n["pocket_trf_removed"] = share_removed("S2_shift_pocket", cor), share_removed("S2_shift_pocket", trf)
+    n["s3_trf_removed"] = share_removed("S3", trf)
+    hb = binding_by_hour(D.run).groupby("binds")["GWh"].sum()
+    for key, label in (("up_pct", "upstream"), ("own_pct", "own lines"), ("trf_pct", "transformer")):
+        n[key] = f"{hb.get(label, 0.0) / hb.sum() * 100:.0f}%"
 
     r = nums["residual"]
     n["res_gwh"] = f"{r['published_rating_below_peak_GWh']:.1f}"
@@ -966,19 +1052,47 @@ def brief_numbers(D: Data, nums: dict) -> dict[str, str]:
     n["n_over"] = f"{nums['spill']['n_over_nodes_nested']}"
     n["over_gw"] = f"{nums['spill']['over_MW_nested'] / 1e3:.1f}"
     n["s3_spill"] = f"{float(L.loc['S3', 'spill_GWh']):.0f}"
-
-    before = FIG_DIR / "summary_numbers.before_duplicate_fix.json"
-    if before.is_file():
-        old = json.loads(before.read_text(encoding="utf-8"))["scenarios"]
-        o = pd.DataFrame(old[".fleet2023.rps_load"]["table"]).set_index("scenario")
-        n["fix_s1_before"], n["fix_s1_after"] = f"{float(o.loc['S1', 'shortfall_GWh']):.1f}", n["s1"]
-        n["fix_mt_before"], n["fix_mt_after"] = f"{float(o.loc['S1', 'co2_Mt']):.2f}", f"{float(L.loc['S1', 'co2_Mt']):.2f}"
-        n["fix_s3_before"], n["fix_s3_after"] = _kt(o.loc["S3", "consequential_t"]), n["load_s3_cons"]
     return n
 
 
 # ----------------------------------------------------------------- assemble
-def assemble(src: Path = SRC_HTML, out: Path = OUT_HTML, page_name: str = "artifact_page.html") -> None:
+FONT_CSS = FIG_DIR / "fonts_inline.css"
+FONT_LINK = re.compile(r'<link rel="stylesheet" href="(https://fonts\.googleapis\.com/css2\?[^"]+)">')
+
+
+def fetch_fonts(src: Path) -> None:
+    """Download the web fonts a template links to and write them as one inline stylesheet.
+
+    The brief is laid out to fill two letter pages exactly, so it cannot depend on a
+    font arriving over the network: with fallback fonts the text runs longer and the
+    pages overflow. Only the Latin subset is kept.
+    """
+    import urllib.request
+
+    m = FONT_LINK.search(src.read_text(encoding="utf-8"))
+    if not m:
+        raise SystemExit(f"{src.name} links no Google Fonts stylesheet")
+    ua = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"}
+    css = urllib.request.urlopen(urllib.request.Request(m.group(1).replace("&amp;", "&"), headers=ua), timeout=60).read().decode("utf-8")
+    blocks = re.findall(r"/\* latin \*/\s*(@font-face\s*\{[^}]*\})", css)
+    if not blocks:
+        raise SystemExit("no Latin @font-face blocks in the response")
+    cache: dict[str, str] = {}
+
+    def embed(mm):
+        url = mm.group(1)
+        if url not in cache:
+            data = urllib.request.urlopen(urllib.request.Request(url, headers=ua), timeout=60).read()
+            cache[url] = base64.b64encode(data).decode()
+        return f"url(data:font/woff2;base64,{cache[url]})"
+
+    out = "\n".join(re.sub(r"url\((https://fonts\.gstatic\.com/[^)]+)\)", embed, b) for b in blocks)
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
+    FONT_CSS.write_text(out, encoding="utf-8")
+    print(f"wrote {FONT_CSS.relative_to(PKG)}: {len(blocks)} faces from {len(cache)} files, {FONT_CSS.stat().st_size / 1e3:.0f} kB")
+
+
+def assemble(src: Path = SRC_HTML, out: Path = OUT_HTML, page_name: str = "artifact_page.html", inline_fonts: bool = False) -> None:
     """Inline figures, tables and numbers into a template and write one file.
 
     ``{{fig:name}}`` becomes the figure as a data URI, ``{{frag:key}}`` a
@@ -987,6 +1101,10 @@ def assemble(src: Path = SRC_HTML, out: Path = OUT_HTML, page_name: str = "artif
     from PIL import Image
 
     html = src.read_text(encoding="utf-8")
+    if inline_fonts:
+        if not FONT_CSS.is_file():
+            fetch_fonts(src)
+        html = FONT_LINK.sub(lambda m: "<style>\n" + FONT_CSS.read_text(encoding="utf-8") + "\n</style>", html, count=1)
     frag_file = FIG_DIR / "fragments.json"
     frags = json.loads(frag_file.read_text(encoding="utf-8")) if frag_file.is_file() else {}
     numbers = frags.get("n", {})
@@ -1017,10 +1135,14 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--assemble", action="store_true", help="Build the HTML from the template and the figures.")
     ap.add_argument("--brief", action="store_true", help="Build the two-page brief instead of the full summary.")
+    ap.add_argument("--fonts", action="store_true", help="Download the brief's web fonts again for inlining.")
     ap.add_argument("--only", nargs="*", default=None, help="Figure names to redraw.")
     args = ap.parse_args()
+    if args.fonts:
+        fetch_fonts(BRIEF_SRC)
+        return
     if args.brief:
-        assemble(BRIEF_SRC, BRIEF_OUT, "brief_page.html")
+        assemble(BRIEF_SRC, BRIEF_OUT, "brief_page.html", inline_fonts=True)
         return
     if args.assemble:
         assemble()

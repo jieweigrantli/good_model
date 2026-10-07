@@ -1,5 +1,5 @@
 <title>ASTR2026 Progress Brief</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@400;600&family=Source+Sans+3:wght@400;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@600&family=Source+Sans+3:wght@400;600&family=IBM+Plex+Mono:wght@400;600&display=swap">
 <style>
   /* Layout: two letter-size sheets that print as two pages, then reference maps that flow. */
   :root {
@@ -11,7 +11,7 @@
     --rule: #D5DCE4;
     --copper: #A9552F;
     --copper-wash: #F7EEE9;
-    --ok: #2F6B52;
+    --todo-wash: #EEF1F4;
 
     --display: "Spectral", Georgia, "Times New Roman", serif;
     --body: "Source Sans 3", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -20,66 +20,79 @@
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --ground: #0E1318; --sheet: #171F28; --plate: #F3F4F6; --ink: #E4E9EF; --muted: #98A6B5; --rule: #2B3642;
-      --copper: #DA8A63; --copper-wash: #2A1D17; --ok: #6FB894; color-scheme: dark;
+      --copper: #DA8A63; --copper-wash: #2A1D17; --todo-wash: #1E2731; color-scheme: dark;
     }
   }
   :root[data-theme="dark"] {
     --ground: #0E1318; --sheet: #171F28; --plate: #F3F4F6; --ink: #E4E9EF; --muted: #98A6B5; --rule: #2B3642;
-    --copper: #DA8A63; --copper-wash: #2A1D17; --ok: #6FB894; color-scheme: dark;
+    --copper: #DA8A63; --copper-wash: #2A1D17; --todo-wash: #1E2731; color-scheme: dark;
   }
 
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--ground); color: var(--ink);
-    font-family: var(--body); font-size: 13.2px; line-height: 1.4; -webkit-font-smoothing: antialiased;
+    font-family: var(--body); font-size: 12.6px; line-height: 1.37; -webkit-font-smoothing: antialiased;
   }
   .stack { padding-inline: 16px; padding-block: 28px 56px; display: flex; flex-direction: column; align-items: center; gap: 26px; }
   .sheet {
     width: 8.5in; max-width: 100%; min-height: 11in; background: var(--sheet); border: 1px solid var(--rule);
-    padding: 0.5in 0.6in 0.4in; display: flex; flex-direction: column; gap: 12px;
+    padding: 0.43in 0.55in 0.35in; display: flex; flex-direction: column; gap: 10px;
   }
-  .sheet.flow { min-height: 0; gap: 22px; }
+  .sheet.flow { min-height: 0; gap: 22px; padding-block: 0.5in; }
   h1, h2 { font-family: var(--display); font-weight: 600; margin: 0; text-wrap: balance; }
-  h1 { font-size: 25px; line-height: 1.14; letter-spacing: -0.01em; }
-  h2 { font-size: 15.5px; line-height: 1.22; display: flex; gap: 8px; align-items: baseline; }
-  h2 .no { font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--copper); flex: none; }
+  h1 { font-size: 24px; line-height: 1.14; letter-spacing: -0.01em; }
+  h2 { font-size: 15px; line-height: 1.2; display: flex; gap: 8px; align-items: baseline; }
+  h2 .no { font-family: var(--mono); font-size: 10.5px; font-weight: 600; color: var(--copper); flex: none; }
+  h2 .tag { font-family: var(--mono); font-size: 9.5px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--rule); padding: 0 5px; flex: none; align-self: center; }
   p { margin: 0; }
   ul { margin: 0; padding-left: 1.1em; display: flex; flex-direction: column; gap: 3px; }
   b { font-weight: 600; }
   a { color: var(--copper); }
   a:focus-visible { outline: 2px solid var(--copper); outline-offset: 2px; }
-  .m { font-family: var(--mono); font-size: 0.9em; font-variant-numeric: tabular-nums; }
+  .m { font-family: var(--mono); font-size: 0.88em; font-variant-numeric: tabular-nums; }
   .eyebrow { font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--copper); }
-  .lede { color: var(--muted); font-size: 14.5px; }
-  header { display: flex; flex-direction: column; gap: 7px; padding-bottom: 11px; border-bottom: 2px solid var(--ink); }
-  .byline { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+  .lede { color: var(--muted); font-size: 14px; }
+  header { display: flex; flex-direction: column; gap: 5px; padding-bottom: 9px; border-bottom: 2px solid var(--ink); }
+  .byline { font-family: var(--mono); font-size: 10px; color: var(--muted); }
 
   .pt { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 26px; align-items: start; }
-  .row.wide-left { grid-template-columns: 1.25fr 1fr; }
-  .decide { border-left: 3px solid var(--copper); background: var(--copper-wash); padding: 5px 9px; }
-  .decide b { font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--copper); margin-right: 6px; }
-  .done b { color: var(--ok); }
-  .done { border-left-color: var(--ok); }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 24px; align-items: start; }
+  .row.wide-left { grid-template-columns: 1.22fr 1fr; }
+  .box { border-left: 3px solid var(--copper); background: var(--copper-wash); padding: 5px 9px; }
+  .box b { font-family: var(--mono); font-size: 9.6px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--copper); margin-right: 6px; }
+  .box.todo { border-left-color: var(--muted); background: var(--todo-wash); }
+  .box.todo b { color: var(--muted); }
 
   .tw { overflow-x: auto; }
-  table { border-collapse: collapse; width: 100%; font-size: 12.6px; }
-  th, td { padding: 4px 8px; text-align: right; border-bottom: 1px solid var(--rule); }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  th, td { padding: 3.5px 7px; text-align: right; border-bottom: 1px solid var(--rule); vertical-align: top; }
   th:first-child, td:first-child { text-align: left; padding-left: 0; }
-  thead th { font-family: var(--mono); font-size: 9.6px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--ink); vertical-align: bottom; }
-  td.num { font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  th:last-child, td:last-child { padding-right: 0; }
+  thead th { font-family: var(--mono); font-size: 9.2px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--ink); vertical-align: bottom; }
+  thead th.span { text-align: center; border-bottom: 1px solid var(--rule); padding-bottom: 2px; }
+  td.num { font-family: var(--mono); font-size: 11.4px; font-variant-numeric: tabular-nums; white-space: nowrap; }
   tbody tr:last-child td { border-bottom: none; }
   tr.ref td { font-weight: 600; }
   tr.key td { background: var(--copper-wash); }
-  .cap { font-size: 11.4px; color: var(--muted); line-height: 1.38; }
+  table.data td, table.data th { text-align: left; }
+  table.data td { font-size: 11.6px; line-height: 1.32; }
+  table.data td:first-child { font-weight: 600; white-space: nowrap; padding-right: 10px; }
+  table.data col.c1 { width: 16%; } table.data col.c2 { width: 35%; } table.data col.c3 { width: 27%; } table.data col.c4 { width: 22%; }
+  .scen { font-family: var(--mono); font-size: 10.8px; font-weight: 600; white-space: nowrap; }
+  .cap { font-size: 11px; color: var(--muted); line-height: 1.36; }
   .cap b { color: var(--ink); }
 
-  figure { margin: 0; display: flex; flex-direction: column; gap: 6px; }
-  figure .plate { background: var(--plate); border: 1px solid var(--rule); padding: 6px; }
+  dl.key { margin: 0; display: grid; grid-auto-flow: column; grid-template-rows: repeat(4, auto); grid-template-columns: 1fr 1.12fr; gap: 1px 24px; }
+  dl.key div { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+  dl.key dt { flex: none; width: 100px; }
+  dl.key dd { margin: 0; min-width: 0; }
+
+  figure { margin: 0; display: flex; flex-direction: column; gap: 5px; }
+  figure .plate { background: var(--plate); border: 1px solid var(--rule); padding: 5px; }
   figure img { display: block; width: 100%; height: auto; max-width: 100%; margin-inline: auto; }
-  figure.short img { width: 70%; }
-  ul.cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 22px; padding-left: 1.1em; }
-  .foot { margin-top: auto; padding-top: 8px; border-top: 1px solid var(--rule); font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; gap: 16px; }
+  figure.lead img { width: 71%; }
+  ul.cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px 22px; padding-left: 1.1em; }
+  .foot { margin-top: auto; padding-top: 7px; border-top: 1px solid var(--rule); font-size: 10.4px; line-height: 1.35; color: var(--muted); display: flex; justify-content: space-between; gap: 16px; }
   .foot span:last-child { font-family: var(--mono); white-space: nowrap; }
   .flow h1 { font-size: 21px; }
   .flow figure { gap: 8px; }
@@ -88,14 +101,15 @@
   @media (max-width: 700px) {
     .sheet { padding: 22px 18px; min-height: 0; }
     .row, .row.wide-left, ul.cols { grid-template-columns: 1fr; }
-    figure.short img { width: 100%; }
+    dl.key { grid-auto-flow: row; grid-template-rows: none; grid-template-columns: 1fr; }
+    figure.lead img { width: 100%; }
   }
   @page { size: letter; margin: 0; }
   @media print {
     /* paper is always the light palette, whatever the screen theme */
     :root, :root:not([data-theme="light"]), :root[data-theme="dark"] {
       --ground: #FFFFFF; --sheet: #FFFFFF; --plate: #FFFFFF; --ink: #16202B; --muted: #586676; --rule: #D5DCE4;
-      --copper: #A9552F; --copper-wash: #F7EEE9; --ok: #2F6B52; color-scheme: light;
+      --copper: #A9552F; --copper-wash: #F7EEE9; --todo-wash: #EEF1F4; color-scheme: light;
     }
     body { background: var(--ground); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .stack { padding: 0; gap: 0; display: block; }
@@ -112,100 +126,124 @@
     <div class="eyebrow">ASTR2026 · Progress brief · 6 October 2026</div>
     <h1>Storage against transmission for EV-driven congestion</h1>
     <p class="lede">Where the model stands, what it shows, and the decisions it needs.</p>
-    <div class="byline">Jiewei Grant Li · UC Davis · results from the re-run of 6 October, four seasonal weeks, 2023 generator fleet</div>
+    <div class="byline">Jiewei Grant Li · UC Davis</div>
   </header>
 
   <div class="pt">
-    <h2><span class="no">1</span>The model runs</h2>
-    <p>PG&amp;E, SCE and SDG&amp;E are modelled substation by substation: {{n:substations}} substations and {{n:corridors}} corridors, rebuilt from public line data. The network sits inside a balancing-area model of the Western grid and is dispatched as one linear program over four seasonal weeks, with the grid as built and the generator fleet that existed in 2023. Eight scenarios solve in about 90 minutes.</p>
+    <h2><span class="no">1</span>Model and data</h2>
+    <p>PG&amp;E, SCE and SDG&amp;E are modelled as {{n:substations}} substations joined by {{n:corridors}} corridors (the lines between two substations), inside a balancing-area model of the Western grid. One linear program dispatches the whole system; eight scenarios solve in about 90 minutes.</p>
+    <div class="tw"><table class="data">
+      <colgroup><col class="c1"><col class="c2"><col class="c3"><col class="c4"></colgroup>
+      <thead><tr><th>Layer</th><th>Main source</th><th>Fallback or synthetic</th><th>Missing</th></tr></thead>
+      <tbody>
+        <tr><td>Substations, lines</td><td>PG&amp;E (2025); elsewhere CEC layers, lines drawn 2008–2010; checked with HIFLD, OpenStreetMap</td><td>{{n:inferred_pct}} of corridors inferred from line geometry; {{n:synthetic_feeds}} synthetic feeds</td><td>Post-2010 lines and collector substations outside PG&amp;E</td></tr>
+        <tr><td>Line ratings</td><td>None public</td><td>Voltage lookup (230 kV: 400 MVA)</td><td>Normal and emergency ratings</td></tr>
+        <tr><td>Transformer ratings</td><td>Hosting-capacity (ICA) and bank data, {{n:rated_pct}} of substations</td><td>Assigned peak ÷ 0.64 at the other {{n:derived_pct}}</td><td>Bank ratings, SCE and SDG&amp;E</td></tr>
+        <tr><td>Base load</td><td>PG&amp;E and SCE substation profiles, 1,136 substations</td><td>NREL county demand split by population</td><td>SDG&amp;E substation load</td></tr>
+        <tr><td>EV charging</td><td>CSTDM travel model; Li and Jenn charging model; PG&amp;E and SCE feeder maps</td><td>Four nearest substations, all of SDG&amp;E</td><td>SDG&amp;E feeder map; adoption after 2025</td></tr>
+        <tr><td>Generators, CO2</td><td>EPA IPM v6.17 units updated to eGRID 2023</td><td>4-hour batteries; regional median costs</td><td>–</td></tr>
+      </tbody>
+    </table></div>
   </div>
 
+  <div class="pt">
+    <h2>Scenarios and configuration</h2>
+    <dl class="key">
+      <div><dt class="scen">S0</dt><dd>no EV charging</dd></div>
+      <div><dt class="scen">S1</dt><dd>EV charging, grid as built (reference)</dd></div>
+      <div><dt class="scen">S2</dt><dd>battery at every EV-load substation</dd></div>
+      <div><dt class="scen">S2_shift_node</dt><dd>storage where load is unserved</dd></div>
+      <div><dt class="scen">S2_shift_pocket</dt><dd>the same storage, half moved to neighbours</dd></div>
+      <div><dt class="scen">S2_curtail</dt><dd>storage where wind and solar are curtailed</dd></div>
+      <div><dt class="scen">S3</dt><dd>S1 with corridor ratings ×10</dd></div>
+      <div><dt class="scen">S4</dt><dd>S3 with transformer ratings ×10 as well</dd></div>
+    </dl>
+    <p class="cap">All scenarios cover 672 hours, the first week of March, June, September and December, on the grid as built: no capacity is added beyond the storage listed, and load above a corridor or transformer rating is left unserved. 2023 generator fleet and RPS ratios. Storage: {{n:default_MW}} MW in S2; {{n:pocket_MW}} MW and {{n:pocket_MWh}} MWh in each S2_shift fleet, sized as an upper bound; {{n:curtail_MW}} MW in S2_curtail.</p>
+  </div>
+
+  <figure class="lead">
+    <div class="plate"><img src="{{fig:A_brief_unserved_S1}}" alt="Map of California and a detail of the Los Angeles basin to the Mexican border, with red circles for unserved load and coloured lines for corridors at their rating in S1."></div>
+    <figcaption class="cap"><b>Where load goes unserved in S1.</b> Circles are load the network cannot deliver in the four weeks, {{n:s1}} GWh in all: SDG&amp;E {{n:sdge_gwh}}, SCE {{n:sce_gwh}}, PG&amp;E {{n:pge_gwh}}. Coloured lines are corridors at their rating for a day or more, {{n:binding}} of {{n:corridors}}.</figcaption>
+  </figure>
+
+  <div class="foot"><span>CEC: California Energy Commission. HIFLD: federal infrastructure data. ICA: integration capacity analysis. CSTDM: statewide travel demand model. RPS: renewable portfolio standard.</span><span>1 / 2</span></div>
+</section>
+
+<section class="sheet" aria-label="Page 2">
   <div class="row wide-left">
     <div class="pt">
       <h2><span class="no">2</span>Storage recovers half of the unserved load</h2>
       <div class="tw"><table>
-        <thead><tr><th>Four weeks, three utilities</th><th>Unserved, GWh</th><th>Relieved</th></tr></thead>
+        <thead><tr><th>Four weeks</th><th>Unserved, GWh</th><th>Relieved</th><th>Corridor-limited</th><th>Transformer-limited</th></tr></thead>
         <tbody>
-          <tr class="ref"><td>EV load, grid as built (S1)</td><td class="num">{{n:s1}}</td><td class="num">–</td></tr>
-          <tr><td>+ storage on every EV substation</td><td class="num">{{n:s2_left}}</td><td class="num">{{n:s2_pct}}</td></tr>
-          <tr class="key"><td>+ storage on the unserved load</td><td class="num">{{n:pocket_left}}</td><td class="num">{{n:pocket_pct}}</td></tr>
-          <tr><td>+ corridors ×10</td><td class="num">{{n:s3_left}}</td><td class="num">{{n:s3_pct}}</td></tr>
-          <tr><td>+ corridors and transformers ×10</td><td class="num">{{n:s4_left}}</td><td class="num">{{n:s4_pct}}</td></tr>
+          <tr><td><span class="scen">S0</span></td><td class="num">{{n:s0}}</td><td class="num">–</td><td class="num">{{n:s0_cor}}</td><td class="num">{{n:s0_trf}}</td></tr>
+          <tr class="ref"><td><span class="scen">S1</span></td><td class="num">{{n:s1}}</td><td class="num">–</td><td class="num">{{n:s1_cor}}</td><td class="num">{{n:s1_trf}}</td></tr>
+          <tr><td><span class="scen">S2</span></td><td class="num">{{n:s2_left}}</td><td class="num">{{n:s2_pct}}</td><td class="num">{{n:s2_cor}}</td><td class="num">{{n:s2_trf}}</td></tr>
+          <tr class="key"><td><span class="scen">S2_shift_pocket</span></td><td class="num">{{n:pocket_left}}</td><td class="num">{{n:pocket_pct}}</td><td class="num">{{n:pocket_cor}}</td><td class="num">{{n:pocket_trf}}</td></tr>
+          <tr><td><span class="scen">S3</span></td><td class="num">{{n:s3_left}}</td><td class="num">{{n:s3_pct}}</td><td class="num">{{n:s3_cor}}</td><td class="num">{{n:s3_trf}}</td></tr>
+          <tr><td><span class="scen">S4</span></td><td class="num">{{n:s4_left}}</td><td class="num">{{n:s4_pct}}</td><td class="num">{{n:s4_cor}}</td><td class="num">{{n:s4_trf}}</td></tr>
         </tbody>
       </table></div>
-      <p class="cap">Storage on the unserved load is {{n:pocket_MW}} MW and {{n:pocket_MWh}} MWh, sized as an upper bound; the EV-substation fleet is {{n:default_MW}} MW. Moving half of it onto neighbouring substations changes relief by {{n:pocket_vs_node}} GWh. Both forms of the renewable standard give these figures to within {{n:rps_gap}} GWh.</p>
+      <p class="cap">Relief is against S1. A substation is transformer-limited if still short with corridors relaxed (S3; {{n:n_trf}} substations) and corridor-limited if S3 serves it in full ({{n:n_cor}}). Storage removes {{n:pocket_cor_removed}} of the unserved load at the latter and {{n:pocket_trf_removed}} at the former; S2_shift_node relieves the same to within {{n:pocket_vs_node}} GWh.</p>
+      <p class="box"><b>Question</b>In practice, what happens when a line or transformer exceeds its rating (emergency ratings, load transfer, shedding)? Should we report overload rather than unserved load?</p>
     </div>
     <div class="pt">
-      <h2><span class="no">3</span>Most of it is not caused by EVs</h2>
-      <p><b>{{n:s0}} GWh</b> is unserved before any EV charging is added. EV charging adds <b>{{n:ev_adds}}</b>. {{n:south_share}} of the total is in SCE and SDG&amp;E.</p>
-      <p>Storage placed where load goes unserved recovers {{n:storage_vs_corridor}} of what a tenfold corridor expansion does.</p>
-      <p class="decide"><b>Decision</b>Is the paper about delivery limits with EV charging as the added stress, or only about the EV increment?</p>
+      <h2><span class="no">3</span>Most unserved load is not caused by EVs</h2>
+      <p><b>{{n:s0}} GWh</b> is unserved before any EV charging is added (S0). EV charging adds <b>{{n:ev_adds}}</b>, {{n:ev_pct}} of the S1 total. {{n:south_share}} of that total is in SCE and SDG&amp;E.</p>
+      <figure>
+        <div class="plate"><img src="{{fig:B_brief_what_is_left}}" alt="Two maps of California showing the unserved load left by storage on the unserved load and by corridors times ten."></div>
+        <figcaption class="cap"><b>What each intervention leaves.</b> S2_shift_pocket and S3. What survives both is concentrated in San Diego.</figcaption>
+      </figure>
     </div>
   </div>
-
-  <figure>
-    <div class="plate"><img src="{{fig:A_brief_unserved_S1}}" alt="Map of California and a detail of the Los Angeles basin to the Mexican border, with red circles for unserved load and coloured lines for corridors at their rating in S1."></div>
-    <figcaption class="cap"><b>Where load goes unserved in S1.</b> Circles are load the network cannot deliver in four weeks. Coloured lines are corridors at their rating for a day or more, {{n:binding}} of {{n:corridors}}. SDG&amp;E holds {{n:sdge_gwh}} GWh, SCE {{n:sce_gwh}}, PG&amp;E {{n:pge_gwh}}.</figcaption>
-  </figure>
-
-  <div class="foot"><span>S1 is the EV charging load on the grid as built. S0, used in point 3, is the same system without EV charging.</span><span>1 / 2</span></div>
-</section>
-
-<section class="sheet" aria-label="Page 2">
-  <figure class="short">
-    <div class="plate"><img src="{{fig:B_brief_what_is_left}}" alt="Three maps of California showing unserved load by substation in S1, with storage on the unserved load, and with corridors times ten."></div>
-    <figcaption class="cap"><b>What each intervention leaves.</b> Same scale in all three. What survives both storage and corridor relief is concentrated in San Diego.</figcaption>
-  </figure>
 
   <div class="row">
     <div class="pt">
       <h2><span class="no">4</span>The remainder is a data conflict</h2>
       <p>{{n:res_gwh}} of the {{n:s3_left}} GWh left after corridor relief is at {{n:res_n}} substations whose published transformer rating is below their load. {{n:res_top_name}} in San Diego holds {{n:res_top_gwh}} GWh: rated {{n:res_top_rating}} MW, assigned {{n:res_top_peak}} MW. SDG&amp;E publishes no substation load, so nothing says which number is wrong.</p>
-      <p class="decide"><b>Decision</b>Report it as a data conflict, outside the congestion estimate?</p>
+      <p class="box"><b>Decision</b>Report it as a data conflict, outside the congestion estimate?</p>
     </div>
     <div class="pt">
-      <h2><span class="no">5</span>CO2 results are not settled</h2>
+      <h2><span class="no">5</span>CO2 results depend on how the RPS is written</h2>
       <div class="tw"><table>
-        <thead><tr><th>kt CO2 against S1</th><th>On load</th><th>Published</th></tr></thead>
+        <thead><tr><th>kt CO2 against S1</th><th>RPS on load served</th><th>RPS on in-state generation</th></tr></thead>
         <tbody>
-          <tr><td>Corridors ×10</td><td class="num">{{n:load_s3_cons}}</td><td class="num">{{n:gen_s3_cons}}</td></tr>
-          <tr><td>Storage on the shortfall</td><td class="num">{{n:load_pocket_cons}}</td><td class="num">{{n:gen_pocket_cons}}</td></tr>
-          <tr><td>Same, equal-load basis</td><td class="num">{{n:load_pocket_marg}}</td><td class="num">{{n:gen_pocket_marg}}</td></tr>
+          <tr><td><span class="scen">S3</span></td><td class="num">{{n:load_s3_cons}}</td><td class="num">{{n:gen_s3_cons}}</td></tr>
+          <tr><td><span class="scen">S2_shift_pocket</span></td><td class="num">{{n:load_pocket_cons}}</td><td class="num">{{n:gen_pocket_cons}}</td></tr>
+          <tr><td>equal-load basis</td><td class="num">{{n:load_pocket_marg}}</td><td class="num">{{n:gen_pocket_marg}}</td></tr>
         </tbody>
       </table></div>
-      <p class="cap">Plus is less CO2 than S1 ({{n:load_s1_mt}} and {{n:gen_s1_mt}} Mt) over four weeks. Row 3 credits the extra load storage serves at the model's rate for added load. Columns: the renewable standard on load served, or as published; see the footer.</p>
-      <p class="decide"><b>Decision</b>Which form of the standard, and which basis for storage?</p>
+      <p class="cap">Plus is less CO2 than S1 ({{n:load_s1_mt}} and {{n:gen_s1_mt}} Mt) over four weeks. The last row credits S2_shift_pocket's extra load at the model's rate for added load. RPS forms: see footer; unserved load agrees to {{n:rps_gap}} GWh.</p>
+      <p class="box"><b>Decision</b>Which RPS form, and which basis for storage?</p>
     </div>
   </div>
 
   <div class="row">
     <div class="pt">
-      <h2><span class="no">6</span>EV charging energy is about double</h2>
-      <p>The input is 2.5 million vehicles at 2025 adoption. Each carries its household's daily mileage, 79 miles where 35 was intended, so the fleet draws 19.8 TWh a year where about 10.6 was intended. Every substation also gets the same hourly charging shape. The EV increment in point 3 inherits both.</p>
-      <p class="decide"><b>Decision</b>Correct the mileage, and which adoption years to run? Inputs stop at 2025.</p>
+      <h2><span class="no">6</span>EV charging energy is about double<span class="tag">To do</span></h2>
+      <p>The charging input simulates 2.5 million vehicles at 2025 adoption. It gives each vehicle the daily car mileage of a whole household, 79 miles on average, where its settings call for 35 miles per vehicle. Charging energy is therefore about twice the intended level: 19.8 against 10.6 TWh a year. Every substation also receives the same hourly profile. The EV increment in point 3 inherits both.</p>
+      <p class="box todo"><b>To do</b>Assign per-vehicle mileage and zone-specific charging profiles, then solve again.</p>
     </div>
     <div class="pt">
-      <h2><span class="no">7</span>SCE and SDG&amp;E lines date from 2010</h2>
-      <p>The line layer for SCE and SDG&amp;E was drawn in 2008 to 2010. Solar and storage built since land on the nearest old substation, a median 6 km away. At {{n:n_over}} substations plants exceed the lines leaving by {{n:over_gw}} GW and the model throws the output away: at least {{n:spill_over}} of the {{n:spill}} GWh spilled. The corridor CO2 saving in point 5 comes from releasing spill, so it is overstated.</p>
-      <p class="decide"><b>Decision</b>Patch each plant with a tie line, or rebuild both utilities from OpenStreetMap, which has the missing lines?</p>
+      <h2><span class="no">7</span>Network data predate recent solar and storage interconnections</h2>
+      <p>Outside PG&amp;E, line geometry dates from 2008–2010. Collector substations and tie lines of plants commissioned since are absent, so these plants attach to the nearest legacy substation, a median 6 km away. At {{n:n_over}} substations attached capacity exceeds outgoing corridor capacity by {{n:over_gw}} GW, and at least {{n:spill_over}} of the {{n:spill}} GWh of curtailment arises there. Corridor relief releases it, overstating the CO2 saving in point 5.</p>
+      <p class="box"><b>Decision</b>How to obtain the missing facilities (CAISO or utility data, interconnection records, OpenStreetMap), and what fallback is acceptable (a tie line sized to the plant)?</p>
     </div>
   </div>
 
   <div class="pt">
-    <h2><span class="no">8</span>Fixed in these results: plants counted twice</h2>
-    <p>156 plants, 3,285 MW, were in every earlier run twice: on a substation and on the bus of LADWP or BANC. All figures here are from the re-run: unserved load and total CO2 moved by under 1%, spill by 4%, the published-form corridor saving by 7%. <span class="m">S1 unserved load {{n:fix_s1_before}} → {{n:fix_s1_after}} GWh · S1 CO2 {{n:fix_mt_before}} → {{n:fix_mt_after}} Mt · corridor saving {{n:fix_s3_before}} → {{n:fix_s3_after}} kt</span></p>
-  </div>
-
-  <div class="pt">
-    <h2><span class="no">9</span>Data I need</h2>
+    <h2><span class="no">8</span>Data needed</h2>
     <ul class="cols">
-      <li><b>Line thermal ratings.</b> None is public; all come from a voltage lookup.</li>
+      <li><b>Line thermal ratings</b>, normal and emergency. None is public.</li>
       <li><b>SDG&amp;E substation load.</b> It settles point 4.</li>
-      <li><b>EV adoption projections beyond 2025.</b> The current input stops there.</li>
+      <li><b>Lines and collector substations built since 2010</b> in SCE and SDG&amp;E (point 7).</li>
+      <li><b>Transformer bank ratings</b> where derived, mainly SCE and SDG&amp;E.</li>
+      <li><b>SDG&amp;E feeder map</b>, to route EV load as in PG&amp;E and SCE.</li>
+      <li><b>EV adoption projections beyond 2025.</b></li>
     </ul>
   </div>
 
-  <div class="foot"><span>Renewable standard: each state's required share of the load it serves, or as published, of in-state generation with a $50/MWh shortfall price.</span><span>2 / 2</span></div>
+  <div class="foot"><span>RPS on load served: each state's required renewable share applies to the load it serves. RPS on in-state generation: the share applies to generation inside the state, with any shortfall priced at $50/MWh; this is the form in GOOD's policy file.</span><span>2 / 2</span></div>
 </section>
 
 <section class="sheet flow" aria-label="Reference maps">
@@ -235,16 +273,16 @@
     <figcaption class="cap"><b>E. Binding corridors and unserved load in S1.</b> The larger version of the map on page 1.</figcaption>
   </figure>
   <figure>
-    <div class="plate"><img src="{{fig:06_spill_S1}}" alt="Map of wind and solar spilled in S1, outlined where attached plants exceed the lines leaving the substation."></div>
-    <figcaption class="cap"><b>F. Wind and solar spilled in S1.</b> {{n:spill}} GWh in four weeks. A dark outline marks a substation whose attached plants exceed the lines that leave it, the subject of point 7. With corridors ×10 the spill at substations is zero.</figcaption>
+    <div class="plate"><img src="{{fig:06_spill_S1}}" alt="Map of wind and solar curtailed in S1, outlined where attached plants exceed the corridors leaving the substation."></div>
+    <figcaption class="cap"><b>F. Wind and solar curtailed in S1.</b> {{n:spill}} GWh in four weeks, labelled as spilled on the map. A dark outline marks a substation whose attached plants exceed the corridors that leave it, the subject of point 7. With corridors ×10 the curtailment at substations is zero.</figcaption>
   </figure>
   <figure>
-    <div class="plate"><img src="{{fig:07_storage_fleets}}" alt="Three maps of the storage fleets: on every EV substation, on the unserved load, and on the spill."></div>
-    <figcaption class="cap"><b>G. The three storage fleets.</b> Bubble scales differ between panels. The fleet sized on spill sits far from any unserved load and relieves none of it.</figcaption>
+    <div class="plate"><img src="{{fig:07_storage_fleets}}" alt="Three maps of the storage fleets: on every EV substation, on the unserved load, and on the curtailment."></div>
+    <figcaption class="cap"><b>G. The three storage fleets.</b> S2, S2_shift_pocket and S2_curtail. Bubble scales differ between panels. The fleet sized on curtailment sits far from any unserved load and relieves none of it.</figcaption>
   </figure>
   <figure>
     <div class="plate"><img src="{{fig:08_unserved_by_scenario}}" alt="Three maps of unserved load by substation in S1, with storage on the unserved load, and with corridors times ten."></div>
-    <figcaption class="cap"><b>H. What each intervention leaves.</b> The larger version of the map on page 2.</figcaption>
+    <figcaption class="cap"><b>H. What each intervention leaves.</b> S1, S2_shift_pocket and S3: the larger version of the map on page 2.</figcaption>
   </figure>
 </section>
 

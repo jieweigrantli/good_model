@@ -1467,6 +1467,37 @@ fleets were sized again from the new S1: 2,533 MW and 22,101 MWh on the unserved
 3,956 MW on the spill. 31 substations now have attached plants above their outgoing
 lines, 9.1 GW over, holding 215 of the 518 GWh spilled at substations.
 
+*Which limit the unserved load sits behind*, three ways, on the load-served run.
+
+By scenario: corridor relief removes 53.49 GWh of S1's 86.35 (S1 − S3), and the other
+32.86 goes only when transformers are relaxed as well (S3 − S4). No substation is
+short of more in S3 than in S1.
+
+By substation: one still short in S3 is transformer-limited (69 substations), one
+short in S1 and served in full by S3 is corridor-limited (63). Every scenario's
+unserved load then splits by where it sits:
+
+| GWh | unserved | at corridor-limited | at transformer-limited |
+|---|---:|---:|---:|
+| S0 | 61.95 | 37.33 | 24.62 |
+| S1 | 86.35 | 51.80 | 34.54 |
+| S2 | 80.63 | 47.41 | 33.22 |
+| S2_shift_pocket | 44.33 | 15.55 | 28.78 |
+| S3 | 32.86 | 0.00 | 32.86 |
+
+Storage on the unserved load removes 70% of it at corridor-limited substations and 17%
+at transformer-limited ones. Corridor relief removes all of the first and 5% of the
+second.
+
+By hour, from S1's saved solution (`binding_by_hour` in `10_13`, cached beside it): in
+the hours a substation is short, its transformer is at its rating for 31.69 GWh (37%,
+67 substations), all of its own inbound lines are at their rating for 4.55 GWh (5%,
+26), and neither is, so the limit is further upstream, for 50.11 GWh (58%, 39).
+
+The model leaves load above a rating unserved. Whether that should be reported as
+unserved load or as overload that an operator would manage is an open question for the
+paper.
+
 **The line data outside PG&E is from 2010 (found 6 October, nothing changed).** Line
 geometry comes from GRIP in PG&E, last updated June 2025, and from the CEC statewide
 layer elsewhere. 94% of the CEC layer's 6,839 features were drawn in 2008 to 2010 and
