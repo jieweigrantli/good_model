@@ -1427,19 +1427,83 @@ which had four times the California wind: California gas is 0.60 of actual, the 
 imports 19% of its load, and coal is 1.32 across the West. Hydro is 1.22 in both, 33 TWh
 a year over.
 
-**Plants counted twice in every three-utility run (found 4 October, not yet fixed).**
-`build_nested_graph` (`09_02`) attaches a mapped plant to its substation from
+**Plants counted twice in every three-utility run (found 4 October, fixed 6 October).**
+`build_nested_graph` (`09_02`) attached a mapped plant to its substation from
 `gen_by_hub`, which holds every plant whose substation is in a nested area.
 `_strip_mapped_ca_assets` removes the plant from its balancing-area bus only if that
 *area* is nested. A plant filed under LADWP or BANC whose nearest substation belongs to
 a nested utility is therefore attached to the substation and left on its own bus. 156
 plants, 3,285 MW (gas 1,920, solar 694, oil 446, wind 137); 157 and 3,159 MW on the IPM
 fleet. In S1 the bus copies generate 874 GWh and the substation copies 719, so about
-1.2% of generation comes from a second copy. It is in all five configurations. The fix
-is to keep one copy, the one on the plant's own bus, and solve again.
+1.2% of generation comes from a second copy. It is in all five configurations.
 
-A summary of the model, the runs and these results, with maps, is
-`docs/astr2026_summary.html`, built by `10_13_summary_figures.py`.
+The fix is in `_restrict_network`: a plant is kept as mapped only if its own region is
+nested as well as its substation, so a region that is not nested keeps all of its plants
+on its bus and nothing is attached twice. 2,003 plants now generate at substations
+where 2,159 did, and none generates in two places. Of the 156, 37
+plants (1,920 MW) are LADWP's own by eGRID's balancing-authority code and 4 (110 MW)
+are BANC's, so their bus is where they belong. The other 115 (1,255 MW) are California
+ISO plants that IPM files under LADWP; they now sit on LADWP's bus only, which is the
+separate question of the 120 plants IPM files outside their balancing authority.
+
+Both 2023-fleet configurations were solved again in place. The IPM-fleet folders were
+not, and still carry the fault. Four weeks, positive = less CO2 than S1:
+
+| | unserved GWh | spill GWh | consequential kt, on load | consequential kt, $50 |
+|---|---:|---:|---:|---:|
+| S0 | 61.95 | 550 | — | — |
+| S1 | 86.35 | 549 | — | — |
+| S2, on every EV substation | 80.63 | 545 | +2.4 | −3.2 |
+| S2_shift_node | 44.43 | 549 | −24.6 | −30.1 |
+| S2_shift_pocket | 44.33 | 549 | −23.8 | −31.0 |
+| S2_curtail | 86.35 | 230 | +94.2 | +108.3 |
+| S3, corridors ×10 | 32.86 | 31 | +293.6 | +497.0 |
+| S4, corridors + transformers ×10 | 0.00 | 31 | +276.0 | +469.6 |
+
+S1 emits 16.24 Mt on load served (16.18 before the fix) and 17.97 Mt in the published
+form (17.90); EV load is served at 491 and 706 kg/MWh (486 and 766). Unserved load rose
+0.4%, spill fell 4%, and the corridor saving in the published form fell 7%. The storage
+fleets were sized again from the new S1: 2,533 MW and 22,101 MWh on the unserved load,
+3,956 MW on the spill. 31 substations now have attached plants above their outgoing
+lines, 9.1 GW over, holding 215 of the 518 GWh spilled at substations.
+
+**The line data outside PG&E is from 2010 (found 6 October, nothing changed).** Line
+geometry comes from GRIP in PG&E, last updated June 2025, and from the CEC statewide
+layer elsewhere. 94% of the CEC layer's 6,839 features were drawn in 2008 to 2010 and
+the layer was last edited in 2016. HIFLD's lines (2017 to 2019) and OpenStreetMap
+(September 2026) are used only to confirm or add corridors between substations the
+model already holds, so a line to a substation that is not in the node set cannot
+enter. Whirlwind and Windhub in Tehachapi and Colorado River near Blythe, three 500 kV
+stations built for renewables, are in OpenStreetMap and have no model substation within
+3 to 8.5 km.
+
+At the substations whose attached plants exceed their lines, 11.2 of 18.1 GW came
+online after 2010. Those plants are a median 6.3 km from the nearest model substation;
+1.5 GW have one within 1 km, and OpenStreetMap shows a substation within 1 km for
+5.9 GW. The other 6.9 GW are older plants (Ormond Beach, High Desert, Sutter, Shasta)
+whose own yard is in the model for 5.5 GW; OpenStreetMap shows a line of 200 kV or more
+at 5.8 GW of them, so there the reconstruction attaches less line than exists. SCE and
+SDG&E hold 81% of S1's unserved load on this line map; how much the missing lines
+would relieve has not been measured.
+
+**The EV input: fleet size, mileage and shape (investigated 6 October, nothing
+changed).** The charging notebook sets 2.5 million vehicles on the EV Toolbox household
+sample, which runs to 2025 (2.22 million EV households, 14.2% of households). Each
+simulated vehicle draws its daily mileage from a household's total car travel in the
+trip model, mean 79.4 miles where the configuration states 35, so the fleet asks for
+17.8 TWh a year where 35 miles a day would give 10.6. The hourly curve is session power
+times occupied hours and integrates to 19.8 TWh, which is what `08_02` allocates. Every
+zone receives that one statewide curve scaled by its share of energy, so all 1,500 EV
+substations have the same hourly shape, with no weekday or weekend difference. Work and
+public charging, 31% of energy, is placed in proportion to where EV owners live. 76% of
+EV energy reaches substations through the feeder chain; SDG&E and the municipal
+utilities, 24%, go to the four nearest substations by inverse distance squared. One
+travel zone puts 78 GWh a year on Catlett (ICA rating 8.2 MW), which alone is 5.0 of
+the 24.4 GWh that EV charging adds to unserved load.
+
+A summary of the model, the runs and the results before the fix, with maps, is
+`docs/astr2026_summary.html`. The two-page brief with the results after it is
+`docs/astr2026_brief.html`. Both are built by `10_13_summary_figures.py`.
 
 **The network build was not reproducible, and that was found by trying to measure
 the feed fix.** Diffing the rebuilt network against the previous one showed the

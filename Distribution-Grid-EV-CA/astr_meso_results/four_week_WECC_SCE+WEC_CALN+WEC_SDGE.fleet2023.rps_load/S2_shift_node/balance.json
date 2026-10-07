@@ -1,7 +1,7 @@
 {
-  "generation_MWh": 58489039.52866935,
+  "generation_MWh": 58506529.43553482,
   "wastage_MWh": 0.0,
-  "line_losses_MWh": 1664663.2649767958,
-  "served_MWh": 56824376.26369255,
-  "shortfall_MWh": 44170.7739581116
+  "line_losses_MWh": 1682409.688358901,
+  "served_MWh": 56824119.747175924,
+  "shortfall_MWh": 44427.29047474492
 }

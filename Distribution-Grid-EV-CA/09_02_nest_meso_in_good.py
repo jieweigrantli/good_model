@@ -159,8 +159,14 @@ def _restrict_network(network: dict, nested_bas: set[str],
                     if e["source"] in keep and e["target"] in keep]
     out["ba_interfaces"] = [i for i in (network.get("ba_interfaces") or [])
                             if i["hub_id"] in keep]
+    # A plant moves to its substation only if its own region is nested as well.
+    # _strip_mapped_ca_assets takes a plant off its region's bus only when that
+    # region is nested, so a plant filed under LADWP or BANC whose nearest
+    # substation belongs to a nested utility used to be attached to the
+    # substation and left on its own bus as well: 156 plants, 3,285 MW, in every
+    # three-utility run. A region that is not nested keeps all of its plants.
     out["generators"] = [x for x in (network.get("generators") or [])
-                         if x.get("hub_id") in keep]
+                         if x.get("hub_id") in keep and x.get("parent_ba") in nested_bas]
     out["bess_candidates"] = [b for b in (network.get("bess_candidates") or [])
                               if b.get("hub_id") in keep]
     # Restriction cuts corridors that ran to substations in other BAs, which

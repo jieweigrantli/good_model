@@ -244,10 +244,10 @@ def bubble_legend(ax, sizes, k, color, unit, loc="lower left", title=None, fmt="
     return leg
 
 
-def save(fig, name: str) -> Path:
+def save(fig, name: str, dpi: int = 150) -> Path:
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     p = FIG_DIR / f"{name}.png"
-    fig.savefig(p, dpi=150, bbox_inches="tight", pad_inches=0.12)
+    fig.savefig(p, dpi=dpi, bbox_inches="tight", pad_inches=0.06 if dpi > 150 else 0.12)
     plt.close(fig)
     print("  wrote", p.relative_to(PKG))
     return p
@@ -465,7 +465,14 @@ def fig_congestion(D: Data):
 
 
 def over_nodes(D: Data) -> pd.DataFrame:
-    inj = pd.Series(C.injection_capacity_by_hub(D.net["generators"])) / 1e6
+    """Substations whose attached plants exceed the lines and gateways leaving.
+
+    A plant is attached to a nested substation only if its own region is nested
+    as well (09_02), so only those are counted.
+    """
+    attached = [g for g in D.net["generators"]
+                if g.get("parent_ba") in NESTED or D.ba.get(g.get("hub_id")) not in NESTED]
+    inj = pd.Series(C.injection_capacity_by_hub(attached)) / 1e6
     e = D.edges
     out = pd.concat([e.groupby("source")["MW"].sum(), e.groupby("target")["MW"].sum()]).groupby(level=0).sum()
     gw = pd.DataFrame(D.net["ba_interfaces"]).groupby("hub_id")["interface_capacity_W"].sum() / 1e6
@@ -579,7 +586,7 @@ def utility_table(D: Data) -> pd.DataFrame:
         inside = real[(real["ba_s"] == ba) & (real["ba_t"] == ba)]
         feeds = e[(e["provenance"] == "synthetic_feed") & ((e["ba_s"] == ba) | (e["ba_t"] == ba))]
         r = D.ratings.reindex(h.index)
-        g = D.gens[D.gens["hub_id"].isin(h.index)]
+        g = D.gens[D.gens["hub_id"].isin(h.index) & D.gens["parent_ba"].isin(NESTED)]
         cls = inside["rated_kv"].fillna(0).map(kv_class)
         L = D.load.reindex(h.index).fillna(0.0)
         rows[UTIL[ba]] = {
@@ -828,39 +835,193 @@ def fragments(D: Data, nums: dict) -> dict[str, str]:
     return out
 
 
+# ----------------------------------------------------------------- the two-page brief
+BRIEF_SRC = DOCS / "astr2026_brief.src.html"
+BRIEF_OUT = DOCS / "astr2026_brief.html"
+BRIEF_BOX = (-119.05, -116.35, 32.5, 34.65)      # Los Angeles basin to the border
+BRIEF_RC = {"font.size": 7, "axes.titlesize": 8, "legend.fontsize": 6.6, "legend.title_fontsize": 6.8}
+
+
+def _small(leg):
+    """Legend text at the brief's size; bubble_legend sets the full-page size."""
+    for txt in leg.get_texts():
+        txt.set_fontsize(6.6)
+    leg.get_title().set_fontsize(6.8)
+    return leg
+
+
+def fig_brief_unserved(D: Data):
+    """Page-width map for the brief: the state, and the south where most of it is."""
+    with plt.rc_context(BRIEF_RC):
+        x0, y0 = T.transform(BRIEF_BOX[0], BRIEF_BOX[2])
+        x1, y1 = T.transform(BRIEF_BOX[1], BRIEF_BOX[3])
+        ext = (x0, x1, y0, y1)
+        b = D.outline.total_bounds
+        a_main, a_zoom = (b[2] - b[0]) / (b[3] - b[1]), (x1 - x0) / (y1 - y0)
+        width = 7.4
+        height = width / (a_main + a_zoom) * 0.985
+        fig, (main, zoom) = plt.subplots(1, 2, figsize=(width, height + 0.22),
+                                         gridspec_kw={"width_ratios": [a_main, a_zoom], "wspace": 0.02})
+        fig.subplots_adjust(left=0.005, right=0.995, top=0.94, bottom=0.01)
+        bind = corridor_binding(D, "S1")
+        hot = bind[bind["binding"] >= 24].sort_values("binding")
+        s = D.scen("S1", "shortfall_by_node.csv")
+        s = s[s["node"].isin(D.xy) & (s["shortfall_GWh"] > 1e-6)]
+        cmap = plt.get_cmap("YlOrRd")
+        k = 17
+        canvas(main, D, title="California")
+        canvas(zoom, D, extent=ext, title="Los Angeles basin to the border")
+        for ax, scale in ((main, 1.0), (zoom, 2.1)):
+            lines(ax, D, D.edges[D.edges["in_scope"]], EDGE, 0.3 * scale ** 0.5, z=1)
+            if len(hot):
+                ax.add_collection(LineCollection(segs(D, hot), colors=cmap(0.35 + 0.65 * np.clip(hot["binding"] / 672, 0, 1)),
+                                                 linewidths=(0.6 + 1.3 * hot["binding"] / 672) * scale ** 0.6, zorder=5, capstyle="round"))
+            bubbles(ax, [D.xy[n][0] for n in s["node"]], [D.xy[n][1] for n in s["node"]], s["shortfall_GWh"].to_numpy(),
+                    k * scale, RED, alpha=0.7, lw=0.4)
+        main.add_patch(Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False, edgecolor=INK, linewidth=0.7, zorder=18))
+        hs = [Line2D([], [], color=cmap(0.35 + 0.65 * v / 672), lw=0.9 + 1.6 * v / 672, label=f"{v} h") for v in (24, 168, 672)]
+        l1 = main.legend(handles=hs, loc="upper right", title="Corridor at its rating,\nhours of 672", borderpad=0.3)
+        l1._legend_box.align = "left"
+        main.add_artist(l1)
+        _small(bubble_legend(main, [1, 5, 15], k, RED, "GWh", loc="lower left", title="Unserved load"))
+        return save(fig, "A_brief_unserved_S1", dpi=220)
+
+
+def fig_brief_remaining(D: Data):
+    with plt.rc_context(BRIEF_RC):
+        panels = [("S1", "EV load, grid as built"),
+                  ("S2_shift_pocket", "With storage on the unserved load"),
+                  ("S3", "With corridors ×10")]
+        b = D.outline.total_bounds
+        a_main = (b[2] - b[0]) / (b[3] - b[1])
+        width = 7.4
+        fig, axes = plt.subplots(1, 3, figsize=(width, width / 3 / a_main * 0.9 + 0.3), gridspec_kw={"wspace": 0.0})
+        fig.subplots_adjust(left=0.005, right=0.995, top=0.9, bottom=0.01)
+        k = 13
+        for ax, (sc, title) in zip(axes, panels):
+            s = D.scen(sc, "shortfall_by_node.csv")
+            s = s[s["node"].isin(D.xy) & (s["shortfall_GWh"] > 1e-6)]
+            canvas(ax, D, cities=False, territories=False, title=f"{title}\n{s['shortfall_GWh'].sum():.1f} GWh unserved")
+            lines(ax, D, D.edges[D.edges["in_scope"]], EDGE, 0.3, z=1, alpha=0.6)
+            bubbles(ax, [D.xy[n][0] for n in s["node"]], [D.xy[n][1] for n in s["node"]], s["shortfall_GWh"].to_numpy(), k, RED,
+                    alpha=0.72, lw=0.4)
+        _small(bubble_legend(axes[0], [1, 5, 15], k, RED, "GWh", loc="lower left"))
+        return save(fig, "B_brief_what_is_left", dpi=220)
+
+
+def brief_numbers(D: Data, nums: dict) -> dict[str, str]:
+    """Every figure quoted in the brief, formatted, so the page follows the results."""
+    sc = nums["scenarios"]
+    L = pd.DataFrame(sc[".fleet2023.rps_load"]["table"]).set_index("scenario")
+    G = pd.DataFrame(sc[".fleet2023"]["table"]).set_index("scenario") if ".fleet2023" in sc else L
+    s1 = float(L.loc["S1", "shortfall_GWh"])
+    n: dict[str, str] = {}
+
+    def left(s):
+        return float(L.loc[s, "shortfall_GWh"])
+
+    def pct(s):
+        return f"{(s1 - left(s)) / s1 * 100:.0f}%"
+
+    n["substations"] = f"{nums['network']['substations_nested']:,}"
+    n["corridors"] = f"{nums['network']['corridors_in_scope']:,}"
+    n["s0"] = f"{left('S0'):.1f}"
+    n["s1"] = f"{s1:.1f}"
+    n["ev_adds"] = f"{s1 - left('S0'):.1f}"
+    n["s0_share"] = f"{left('S0') / s1 * 100:.0f}%"
+    for key, s in (("s2", "S2"), ("pocket", "S2_shift_pocket"), ("node", "S2_shift_node"), ("s3", "S3"), ("s4", "S4"), ("curtail", "S2_curtail")):
+        n[f"{key}_left"] = f"{left(s):.1f}"
+        n[f"{key}_pct"] = pct(s)
+        n[f"{key}_relief"] = f"{s1 - left(s):.1f}"
+    n["pocket_vs_node"] = f"{abs(left('S2_shift_node') - left('S2_shift_pocket')):.1f}"
+    n["storage_vs_corridor"] = f"{(s1 - left('S2_shift_pocket')) / (s1 - left('S3')) * 100:.0f}%"
+    b = nums["bess"]
+    for key in ("default", "pocket", "curtail"):
+        n[f"{key}_MW"] = f"{b[key]['MW']:,.0f}"
+        n[f"{key}_MWh"] = f"{b[key]['MWh']:,.0f}"
+        n[f"{key}_sites"] = f"{b[key]['sites']:,}"
+    n["rps_gap"] = f"{max(abs(float(G.loc[s, 'shortfall_GWh']) - left(s)) for s in L.index if s in G.index):.1f}"
+    u = nums["S1_shortfall_by_utility"]
+    n["sdge_gwh"], n["sce_gwh"], n["pge_gwh"] = (f"{u[k][1]:.1f}" for k in ("SDG&E", "SCE", "PG&E"))
+    n["south_share"] = f"{(u['SDG&E'][1] + u['SCE'][1]) / s1 * 100:.0f}%"
+    n["binding"] = f"{nums['congestion']['binding_corridors_ge_24h']:,}"
+
+    r = nums["residual"]
+    n["res_gwh"] = f"{r['published_rating_below_peak_GWh']:.1f}"
+    n["res_n"] = f"{r['published_rating_below_peak_n']}"
+    top = r["top"][0]
+    n["res_top_name"], n["res_top_gwh"], n["res_top_rating"], n["res_top_peak"] = top[3], f"{top[1]:.1f}", f"{top[5]:.1f}", f"{top[6]:.0f}"
+
+    for key, t in (("load", L), ("gen", G)):
+        n[f"{key}_s1_mt"] = f"{float(t.loc['S1', 'co2_Mt']):.1f}"
+        n[f"{key}_rate"] = f"{float(t.loc['S1', 'marginal_rate_reference_kg_per_MWh']):.0f}"
+        n[f"{key}_s3_cons"] = _kt(t.loc["S3", "consequential_t"])
+        n[f"{key}_pocket_cons"] = _kt(t.loc["S2_shift_pocket", "consequential_t"])
+        n[f"{key}_pocket_marg"] = _kt(t.loc["S2_shift_pocket", "marginal_t"])
+        n[f"{key}_curtail_cons"] = _kt(t.loc["S2_curtail", "consequential_t"])
+    n["spill"] = f"{float(L.loc['S1', 'spill_GWh']):.0f}"
+    n["spill_sub"] = f"{float(L.loc['S1', 'spill_substations_GWh']):.0f}"
+    n["spill_over"] = f"{nums['spill']['spill_over_GWh']:.0f}"
+    n["spill_over_pct"] = f"{nums['spill']['spill_over_GWh'] / float(L.loc['S1', 'spill_substations_GWh']) * 100:.0f}%"
+    n["n_over"] = f"{nums['spill']['n_over_nodes_nested']}"
+    n["over_gw"] = f"{nums['spill']['over_MW_nested'] / 1e3:.1f}"
+    n["s3_spill"] = f"{float(L.loc['S3', 'spill_GWh']):.0f}"
+
+    before = FIG_DIR / "summary_numbers.before_duplicate_fix.json"
+    if before.is_file():
+        old = json.loads(before.read_text(encoding="utf-8"))["scenarios"]
+        o = pd.DataFrame(old[".fleet2023.rps_load"]["table"]).set_index("scenario")
+        n["fix_s1_before"], n["fix_s1_after"] = f"{float(o.loc['S1', 'shortfall_GWh']):.1f}", n["s1"]
+        n["fix_mt_before"], n["fix_mt_after"] = f"{float(o.loc['S1', 'co2_Mt']):.2f}", f"{float(L.loc['S1', 'co2_Mt']):.2f}"
+        n["fix_s3_before"], n["fix_s3_after"] = _kt(o.loc["S3", "consequential_t"]), n["load_s3_cons"]
+    return n
+
+
 # ----------------------------------------------------------------- assemble
-def assemble() -> None:
+def assemble(src: Path = SRC_HTML, out: Path = OUT_HTML, page_name: str = "artifact_page.html") -> None:
+    """Inline figures, tables and numbers into a template and write one file.
+
+    ``{{fig:name}}`` becomes the figure as a data URI, ``{{frag:key}}`` a
+    generated table, ``{{n:key}}`` a number from the results.
+    """
     from PIL import Image
 
-    html = SRC_HTML.read_text(encoding="utf-8")
+    html = src.read_text(encoding="utf-8")
     frag_file = FIG_DIR / "fragments.json"
     frags = json.loads(frag_file.read_text(encoding="utf-8")) if frag_file.is_file() else {}
+    numbers = frags.get("n", {})
 
     def img(m):
-        p = FIG_DIR / f"{m.group(1)}.png"
-        im = Image.open(p).convert("RGB")
+        im = Image.open(FIG_DIR / f"{m.group(1)}.png").convert("RGB")
         buf = io.BytesIO()
         im.save(buf, "WEBP", quality=92, method=6)
         return f"data:image/webp;base64,{base64.b64encode(buf.getvalue()).decode()}\" width=\"{im.width}\" height=\"{im.height}"
 
     html = re.sub(r"\{\{fig:([\w\-]+)\}\}", img, html)
     missing = [k for k in re.findall(r"\{\{frag:([\w\-]+)\}\}", html) if k not in frags]
+    missing += [k for k in re.findall(r"\{\{n:([\w\-]+)\}\}", html) if k not in numbers]
     if missing:
-        raise SystemExit(f"fragments not generated: {missing}")
+        raise SystemExit(f"not generated: {missing}")
     html = re.sub(r"\{\{frag:([\w\-]+)\}\}", lambda m: frags[m.group(1)], html)
+    html = re.sub(r"\{\{n:([\w\-]+)\}\}", lambda m: numbers[m.group(1)], html)
+    head, body = html.split("<!--BODY-->")
     page = ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
             "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-            + html.split("<!--BODY-->")[0] + "</head>\n<body>\n" + html.split("<!--BODY-->")[1] + "\n</body>\n</html>\n")
-    OUT_HTML.write_text(page, encoding="utf-8")
-    (FIG_DIR / "artifact_page.html").write_text(html.replace("<!--BODY-->", ""), encoding="utf-8")
-    print(f"wrote {OUT_HTML} ({OUT_HTML.stat().st_size / 1e6:.1f} MB)")
+            + head + "</head>\n<body>\n" + body + "\n</body>\n</html>\n")
+    out.write_text(page, encoding="utf-8")
+    (FIG_DIR / page_name).write_text(head + body, encoding="utf-8")
+    print(f"wrote {out} ({out.stat().st_size / 1e6:.1f} MB)")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--assemble", action="store_true", help="Build the HTML from the template and the figures.")
+    ap.add_argument("--brief", action="store_true", help="Build the two-page brief instead of the full summary.")
     ap.add_argument("--only", nargs="*", default=None, help="Figure names to redraw.")
     args = ap.parse_args()
+    if args.brief:
+        assemble(BRIEF_SRC, BRIEF_OUT, "brief_page.html")
+        return
     if args.assemble:
         assemble()
         return
@@ -868,9 +1029,14 @@ def main() -> None:
     D = Data()
     nums: dict = {"map_variant": MAP_VARIANT}
     todo = {"topology": fig_topology, "zooms": fig_zooms, "provenance": fig_provenance, "load_fleet": fig_load_fleet,
-            "congestion": fig_congestion, "spill": fig_spill, "bess": fig_bess, "remaining": fig_remaining}
+            "congestion": fig_congestion, "spill": fig_spill, "bess": fig_bess, "remaining": fig_remaining,
+            "brief_unserved": fig_brief_unserved, "brief_remaining": fig_brief_remaining}
+    prev = FIG_DIR / "summary_numbers.json"
+    kept = json.loads(prev.read_text(encoding="utf-8")) if prev.is_file() else {}
     for name, fn in todo.items():
         if args.only is not None and name not in args.only:
+            if name in kept:
+                nums[name] = kept[name]
             continue
         res = fn(D)
         if isinstance(res, tuple):
@@ -882,7 +1048,8 @@ def main() -> None:
         "synthetic_feeds_all": int((e["provenance"] == "synthetic_feed").sum()),
         "provenance_in_scope": e.loc[e["in_scope"], "provenance"].value_counts().to_dict(),
         "rating_source_nested": D.ratings.reindex(D.hubs.index[D.nested])["rating_source"].value_counts().to_dict(),
-        "generators_mapped": int(len(D.gens)), "generation_GW_nested": float(D.gens[D.gens["hub_id"].map(D.ba).isin(NESTED)]["MW"].sum() / 1e3),
+        "generators_mapped": int(len(D.gens)),
+        "generation_GW_nested": float(D.gens[D.gens["hub_id"].map(D.ba).isin(NESTED) & D.gens["parent_ba"].isin(NESTED)]["MW"].sum() / 1e3),
         "coincident_peak_GW_nested": D.coincident_nested[0], "coincident_ev_peak_GW_nested": D.coincident_nested[1],
         "ev_share_of_energy_nested": D.coincident_nested[2],
     }
@@ -897,7 +1064,9 @@ def main() -> None:
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     (FIG_DIR / "summary_numbers.json").write_text(json.dumps(nums, indent=2, default=float), encoding="utf-8")
     print("  wrote", (FIG_DIR / "summary_numbers.json").relative_to(PKG))
-    (FIG_DIR / "fragments.json").write_text(json.dumps(fragments(D, nums), indent=1), encoding="utf-8")
+    frags = fragments(D, nums)
+    frags["n"] = brief_numbers(D, nums)
+    (FIG_DIR / "fragments.json").write_text(json.dumps(frags, indent=1), encoding="utf-8")
     print("  wrote", (FIG_DIR / "fragments.json").relative_to(PKG))
 
 

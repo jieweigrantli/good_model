@@ -1,7 +1,7 @@
 {
-  "shortfall_MWh": 32855.317542369565,
+  "shortfall_MWh": 32855.31754236954,
   "wastage_MWh": 30937.523206803402,
-  "shortfall_GWh": 32.85531754236956,
+  "shortfall_GWh": 32.85531754236954,
   "wastage_GWh": 30.9375232068034,
   "dumped_surplus_GWh": 30.9375232068034,
   "vre_curtailment_GWh": 0.0,
@@ -12,7 +12,7 @@
     ],
     [
       "SUB_15376",
-      4972.611814843749
+      4972.61181484375
     ],
     [
       "SUB_HIFLD_966",
