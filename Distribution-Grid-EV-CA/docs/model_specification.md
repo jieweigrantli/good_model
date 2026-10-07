@@ -1500,8 +1500,13 @@ paper.
 
 **The line data outside PG&E is from 2010 (found 6 October, nothing changed).** Line
 geometry comes from GRIP in PG&E, last updated June 2025, and from the CEC statewide
-layer elsewhere. 94% of the CEC layer's 6,839 features were drawn in 2008 to 2010 and
-the layer was last edited in 2016. HIFLD's lines (2017 to 2019) and OpenStreetMap
+layer elsewhere. 94% of the CEC layer's 6,839 features were drawn in 2008 to 2010,
+425 more by 2016, and three PG&E segments in June 2025, the service's last edit. It is
+the dataset data.ca.gov lists as "California Electric Transmission Lines" (CEC service
+`Transmission_Line/FeatureServer/2`): downloaded from there on 6 October it matches the
+model's file feature for feature, 6,839 ids with identical geometry and voltage. The
+portal's date of 30 September 2026 is when the catalogue harvested it, not when the
+lines were drawn. HIFLD's lines (2017 to 2019) and OpenStreetMap
 (September 2026) are used only to confirm or add corridors between substations the
 model already holds, so a line to a substation that is not in the node set cannot
 enter. Whirlwind and Windhub in Tehachapi and Colorado River near Blythe, three 500 kV

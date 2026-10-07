@@ -1041,10 +1041,12 @@ def brief_numbers(D: Data, nums: dict) -> dict[str, str]:
     for key, t in (("load", L), ("gen", G)):
         n[f"{key}_s1_mt"] = f"{float(t.loc['S1', 'co2_Mt']):.1f}"
         n[f"{key}_rate"] = f"{float(t.loc['S1', 'marginal_rate_reference_kg_per_MWh']):.0f}"
-        n[f"{key}_s3_cons"] = _kt(t.loc["S3", "consequential_t"])
-        n[f"{key}_pocket_cons"] = _kt(t.loc["S2_shift_pocket", "consequential_t"])
-        n[f"{key}_pocket_marg"] = _kt(t.loc["S2_shift_pocket", "marginal_t"])
-        n[f"{key}_curtail_cons"] = _kt(t.loc["S2_curtail", "consequential_t"])
+        # The brief reports the change in CO2 from S1, E(X) - E(S1): negative is a
+        # reduction. The accounting files hold the opposite sign, E(S1) - E(X).
+        n[f"{key}_s3_cons"] = _kt(-t.loc["S3", "consequential_t"])
+        n[f"{key}_pocket_cons"] = _kt(-t.loc["S2_shift_pocket", "consequential_t"])
+        n[f"{key}_pocket_marg"] = _kt(-t.loc["S2_shift_pocket", "marginal_t"])
+        n[f"{key}_curtail_cons"] = _kt(-t.loc["S2_curtail", "consequential_t"])
     n["spill"] = f"{float(L.loc['S1', 'spill_GWh']):.0f}"
     n["spill_sub"] = f"{float(L.loc['S1', 'spill_substations_GWh']):.0f}"
     n["spill_over"] = f"{nums['spill']['spill_over_GWh']:.0f}"
